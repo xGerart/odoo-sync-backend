@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+ENV/
+env/
+*.egg-info/
+
+# Logs
+*.log
+sync_logs.log
+
+# Reports folder (generated files)
+reports/*.pdf
+reports/*.xml
+
+# Node.js (for localtunnel)
+node_modules/
+package-lock.json
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+._*
+
+# Environment variables
+.env
+.env.local
+
+# Test files
+test_*.py
+
+# Downloads
+*.tgz
+*.tar.gz
+*.zip

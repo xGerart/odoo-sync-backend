@@ -1,0 +1,8 @@
+fastapi>=0.110.0
+uvicorn[standard]>=0.27.0
+python-multipart>=0.0.9
+xmltodict>=0.13.0
+requests>=2.31.0
+pydantic>=2.9.0
+reportlab>=4.0.4
+gunicorn>=21.2.0
