@@ -13,6 +13,7 @@ class XMLInvoiceParser:
     def __init__(self):
         self.supported_providers = [
             "D'Mujeres",  # D'Mujeres provider with Ecuadorian format
+            "LANSEY",  # LANSEY provider with same format as D'Mujeres but uses codigoPrincipal as barcode
             'Proveedor Genérico'  # Generic provider fallback
         ]
         self.generated_barcodes = set()  # Keep track of generated barcodes to avoid duplicates
@@ -144,6 +145,8 @@ class XMLInvoiceParser:
             
             if provider == "D'Mujeres":
                 products = self._parse_dmujeres_format(xml_dict)
+            elif provider == "LANSEY":
+                products = self._parse_lansey_format(xml_dict)
             elif provider == "Proveedor Genérico":
                 products = self._parse_generic_format(xml_dict)
             else:
@@ -243,8 +246,95 @@ class XMLInvoiceParser:
             print(f"Error extracting D'Mujeres product: {e}")
         
         return None
-    
-    
+
+    def _parse_lansey_format(self, xml_dict: Dict[str, Any]) -> List[ProductData]:
+        """Parse LANSEY format (same as D'Mujeres Ecuadorian electronic invoice format)"""
+        products = []
+
+        try:
+            # Handle CDATA content in autorizacion->comprobante
+            comprobante_content = None
+
+            if 'autorizacion' in xml_dict:
+                comprobante_cdata = xml_dict['autorizacion'].get('comprobante', '')
+                if comprobante_cdata:
+                    # Parse the inner XML from CDATA
+                    inner_xml_dict = xmltodict.parse(comprobante_cdata)
+                    comprobante_content = inner_xml_dict.get('factura')
+            else:
+                # Try direct factura access
+                comprobante_content = xml_dict.get('factura')
+
+            if not comprobante_content:
+                return products
+
+            # Navigate to detalles section
+            detalles = comprobante_content.get('detalles', {})
+            if not detalles:
+                return products
+
+            detalle_list = detalles.get('detalle', [])
+            if not detalle_list:
+                return products
+
+            # Handle both single item and list of items
+            if not isinstance(detalle_list, list):
+                detalle_list = [detalle_list]
+
+            for detalle in detalle_list:
+                product = self._extract_lansey_product(detalle)
+                if product:
+                    products.append(product)
+
+        except Exception as e:
+            print(f"Error parsing LANSEY format: {e}")
+
+        return products
+
+    def _extract_lansey_product(self, detalle: Dict[str, Any]) -> Optional[ProductData]:
+        """Extract product data from LANSEY detalle - uses codigoPrincipal as barcode"""
+        try:
+            # Extract required fields
+            descripcion_raw = detalle.get('descripcion', '').strip()
+
+            # Clean HTML entities and description: remove extra whitespace, newlines, and limit length
+            descripcion = self._clean_html_entities(descripcion_raw)
+            descripcion = ' '.join(descripcion.split())  # Remove extra whitespace and newlines
+            descripcion = descripcion[:100]  # Limit to 100 characters
+
+            cantidad = float(detalle.get('cantidad', 0))
+            precio_unitario = float(detalle.get('precioUnitario', 0))
+            precio_total = float(detalle.get('precioTotalSinImpuesto', 0))  # Precio total sin impuestos
+
+            # Extract optional fields
+            codigo_principal = detalle.get('codigoPrincipal', '').strip()
+            codigo_auxiliar = detalle.get('codigoAuxiliar', '').strip()
+
+            # LANSEY uses codigoPrincipal as barcode (MANDATORY)
+            # Only fall back to codigoAuxiliar if codigoPrincipal is not available
+            codigo_final = codigo_principal if codigo_principal else (codigo_auxiliar if codigo_auxiliar else None)
+
+            # If no barcode available, generate one using product description
+            if not codigo_final:
+                codigo_final = self._generate_unique_barcode(descripcion)
+
+            if descripcion and cantidad > 0 and precio_unitario > 0:
+                # Calcular precio costo real basado en precio total / cantidad
+                # Esto refleja mejor el costo real cuando hay descuentos
+                precio_costo_real = precio_total / cantidad if cantidad > 0 else precio_unitario
+
+                return ProductData(
+                    descripcion=descripcion,
+                    cantidad=cantidad,
+                    codigo_auxiliar=codigo_final,
+                    precio_unitario=precio_costo_real  # Usar el precio costo calculado
+                )
+        except Exception as e:
+            print(f"Error extracting LANSEY product: {e}")
+
+        return None
+
+
     def _parse_generic_format(self, xml_dict: Dict[str, Any]) -> List[ProductData]:
         """Parse generic XML format by searching for common patterns"""
         products = []
