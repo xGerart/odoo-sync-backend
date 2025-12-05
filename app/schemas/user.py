@@ -27,8 +27,8 @@ class UserCreate(UserBase):
             raise ValueError("Cannot create admin users. Admins authenticate via Odoo.")
         return v
 
-    class Config:
-        json_schema_extra = {
+    model_config = {
+        "json_schema_extra": {
             "example": {
                 "username": "jperez",
                 "email": "jperez@example.com",
@@ -37,6 +37,7 @@ class UserCreate(UserBase):
                 "role": "cajero"
             }
         }
+    }
 
 
 class UserUpdate(BaseModel):
@@ -64,9 +65,9 @@ class UserResponse(UserBase):
     created_at: datetime
     updated_at: datetime
 
-    class Config:
-        from_attributes = True
-        json_schema_extra = {
+    model_config = {
+        "from_attributes": True,
+        "json_schema_extra": {
             "example": {
                 "id": 1,
                 "username": "jperez",
@@ -78,6 +79,7 @@ class UserResponse(UserBase):
                 "updated_at": "2024-01-15T10:30:00"
             }
         }
+    }
 
 
 class UserListResponse(BaseModel):
