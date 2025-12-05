@@ -25,6 +25,10 @@ async def app_exception_handler(request: Request, exc: AppException) -> JSONResp
             "success": False,
             "message": exc.message,
             "details": exc.details
+        },
+        headers={
+            "Access-Control-Allow-Origin": request.headers.get("origin", "*"),
+            "Access-Control-Allow-Credentials": "true",
         }
     )
 
@@ -46,6 +50,10 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException) 
             "success": False,
             "message": str(exc.detail),
             "details": {}
+        },
+        headers={
+            "Access-Control-Allow-Origin": request.headers.get("origin", "*"),
+            "Access-Control-Allow-Credentials": "true",
         }
     )
 
@@ -75,6 +83,10 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
             "success": False,
             "message": "Validation error",
             "details": {"errors": errors}
+        },
+        headers={
+            "Access-Control-Allow-Origin": request.headers.get("origin", "*"),
+            "Access-Control-Allow-Credentials": "true",
         }
     )
 
@@ -103,5 +115,9 @@ async def generic_exception_handler(request: Request, exc: Exception) -> JSONRes
             "success": False,
             "message": "Internal server error",
             "details": {"error": str(exc)} if request.app.state.config.DEBUG else {}
+        },
+        headers={
+            "Access-Control-Allow-Origin": request.headers.get("origin", "*"),
+            "Access-Control-Allow-Credentials": "true",
         }
     )
