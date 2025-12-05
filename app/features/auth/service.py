@@ -65,7 +65,12 @@ class AuthService:
         Raises:
             AuthenticationError: If Odoo authentication fails
         """
+        import logging
+        logger = logging.getLogger(__name__)
+
         try:
+            logger.info(f"[LOGIN_ODOO] Starting login for user: {request.username}")
+
             # Get location configuration
             location = LocationService.get_location_by_id(request.location_id)
             if not location:
@@ -73,6 +78,8 @@ class AuthService:
                     f"Invalid location ID: {request.location_id}. "
                     "Please select a valid location."
                 )
+
+            logger.info(f"[LOGIN_ODOO] Location: {location.name} ({location.database})")
 
             # Create Odoo credentials using location configuration
             credentials = OdooCredentials(
@@ -85,11 +92,14 @@ class AuthService:
             )
 
             # Try to authenticate with Odoo
+            logger.info("[LOGIN_ODOO] Authenticating with Odoo...")
             client = OdooClient(credentials)
             auth_result = client.authenticate()
 
             if not auth_result.get('success'):
                 raise AuthenticationError("Odoo authentication failed")
+
+            logger.info("[LOGIN_ODOO] Odoo authentication successful")
 
             # Verify user has admin rights in Odoo
             if not self._verify_odoo_admin(client):
@@ -97,9 +107,15 @@ class AuthService:
                     "User does not have administrator rights in Odoo"
                 )
 
+            logger.info("[LOGIN_ODOO] Admin rights verified")
+
             # Connect Odoo manager with these credentials so it's available globally
             if odoo_manager:
+                logger.info("[LOGIN_ODOO] Connecting odoo_manager...")
                 odoo_manager.connect_principal(credentials)
+                logger.info("[LOGIN_ODOO] odoo_manager connected successfully")
+            else:
+                logger.warning("[LOGIN_ODOO] odoo_manager is None, connection not saved!")
 
             # Create JWT token for admin
             token = create_user_token(

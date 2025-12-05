@@ -268,11 +268,21 @@ def search_product(
 
     Returns product details if found.
     """
+    import logging
+    logger = logging.getLogger(__name__)
     from app.core.exceptions import ValidationError, OdooOperationError, OdooConnectionError
 
     try:
+        logger.info(f"[SEARCH] Searching for barcode: {barcode}")
+        logger.info(f"[SEARCH] User: {current_user.username}, Role: {current_user.role}")
+
+        logger.info("[SEARCH] Getting principal client...")
         client = manager.get_principal_client()
+        logger.info(f"[SEARCH] Got client, authenticated: {client.is_authenticated()}")
+
+        logger.info("[SEARCH] Creating ProductService...")
         service = ProductService(client, db)
+        logger.info("[SEARCH] ProductService created")
 
         product = service.search_product_by_barcode(barcode)
 
