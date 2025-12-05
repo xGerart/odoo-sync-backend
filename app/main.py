@@ -83,10 +83,23 @@ app = FastAPI(
     redoc_url="/redoc"
 )
 
-# Configure CORS
+# Configure CORS with regex support for Vercel previews
+import re
+
+def is_allowed_origin(origin: str) -> bool:
+    """Check if origin is allowed (supports Vercel preview URLs)."""
+    allowed_patterns = [
+        r"^http://localhost:3000$",
+        r"^http://127\.0\.0\.1:3000$",
+        r"^https://odoo-sync-frontend.*\.vercel\.app$",
+    ]
+    return any(re.match(pattern, origin) for pattern in allowed_patterns)
+
+# Use allow_origin_regex for Vercel preview URLs
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.ALLOWED_ORIGINS,
+    allow_origin_regex=r"https://odoo-sync-frontend.*\.vercel\.app",
+    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
