@@ -74,6 +74,9 @@ class OdooConnectionError(AppException):
         details: Optional[Dict[str, Any]] = None,
         is_session_expired: bool = False
     ):
+        # Store the flag as instance attribute
+        self.is_session_expired = is_session_expired
+
         # Use 401 for expired sessions, 503 for connection failures
         status_code = (
             status.HTTP_401_UNAUTHORIZED
