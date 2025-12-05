@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.locations import LocationService, OdooLocation
 from app.schemas.auth import LoginRequest, OdooLoginRequest, LoginResponse, UserInfo
-from app.schemas.user import UserCreate, UserResponse
+from app.schemas.user import UserCreate, UserUpdate, UserResponse, UserListResponse
 from app.schemas.common import MessageResponse, OdooCredentials
 from app.features.auth.service import AuthService
 from app.features.auth.dependencies import get_current_user, require_admin
@@ -164,6 +164,83 @@ def activate_user(
 
     return MessageResponse(
         message=f"User {user_id} activated successfully",
+        success=True
+    )
+
+
+@router.get("/users", response_model=UserListResponse)
+def list_users(
+    skip: int = 0,
+    limit: int = 100,
+    db: Session = Depends(get_db),
+    current_user: UserInfo = Depends(require_admin)
+):
+    """
+    List all users with pagination.
+
+    **Admin access required.**
+
+    - **skip**: Number of records to skip (default: 0)
+    - **limit**: Maximum number of records (default: 100)
+
+    Returns list of users and total count.
+    """
+    auth_service = AuthService(db)
+    users, total = auth_service.get_all_users(skip=skip, limit=limit)
+
+    return UserListResponse(
+        users=[UserResponse.model_validate(u) for u in users],
+        total=total
+    )
+
+
+@router.put("/users/{user_id}", response_model=UserResponse)
+def update_user(
+    user_id: int,
+    user_data: UserUpdate,
+    db: Session = Depends(get_db),
+    current_user: UserInfo = Depends(require_admin)
+):
+    """
+    Update a user's information.
+
+    **Admin access required.**
+
+    - **user_id**: ID of user to update
+    - **email**: New email (optional)
+    - **full_name**: New full name (optional)
+    - **password**: New password (optional, min 8 characters)
+    - **is_active**: Active status (optional)
+    - **role**: New role (optional, cajero or bodeguero only)
+
+    Returns updated user information.
+    """
+    auth_service = AuthService(db)
+    user = auth_service.update_user(user_id, user_data)
+
+    return UserResponse.model_validate(user)
+
+
+@router.delete("/users/{user_id}", response_model=MessageResponse)
+def delete_user(
+    user_id: int,
+    db: Session = Depends(get_db),
+    current_user: UserInfo = Depends(require_admin)
+):
+    """
+    Delete a user account.
+
+    **Admin access required.**
+
+    - **user_id**: ID of user to delete
+
+    This is a permanent deletion.
+    """
+    auth_service = AuthService(db)
+    auth_service.delete_user(user_id)
+
+    return MessageResponse(
+        message=f"User {user_id} deleted successfully",
         success=True
     )
 

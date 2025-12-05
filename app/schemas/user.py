@@ -45,6 +45,15 @@ class UserUpdate(BaseModel):
     full_name: Optional[str] = Field(None, max_length=100)
     password: Optional[str] = Field(None, min_length=8)
     is_active: Optional[bool] = None
+    role: Optional[UserRole] = None
+
+    @field_validator('role')
+    @classmethod
+    def validate_role(cls, v: Optional[UserRole]) -> Optional[UserRole]:
+        """Ensure role is not admin (admins auth via Odoo)."""
+        if v == UserRole.ADMIN:
+            raise ValueError("Cannot assign admin role. Admins authenticate via Odoo.")
+        return v
 
 
 class UserResponse(UserBase):

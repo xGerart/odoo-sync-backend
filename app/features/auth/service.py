@@ -5,7 +5,7 @@ from typing import Optional, Tuple
 from sqlalchemy.orm import Session
 from app.models.user import User
 from app.schemas.auth import LoginRequest, OdooLoginRequest, LoginResponse, UserInfo
-from app.schemas.user import UserCreate
+from app.schemas.user import UserCreate, UserUpdate
 from app.core.security import (
     verify_password,
     get_password_hash,
@@ -343,3 +343,87 @@ class AuthService:
         self.db.refresh(user)
 
         return user
+
+    def get_all_users(self, skip: int = 0, limit: int = 100) -> Tuple[list[User], int]:
+        """
+        Get all users with pagination.
+
+        Args:
+            skip: Number of records to skip
+            limit: Maximum number of records to return
+
+        Returns:
+            Tuple of (users list, total count)
+        """
+        query = self.db.query(User)
+        total = query.count()
+        users = query.offset(skip).limit(limit).all()
+
+        return users, total
+
+    def update_user(self, user_id: int, user_data: UserUpdate) -> User:
+        """
+        Update a user's information.
+
+        Args:
+            user_id: User ID to update
+            user_data: Updated user data
+
+        Returns:
+            Updated user
+
+        Raises:
+            UserNotFoundError: If user not found
+            ValidationError: If password is weak
+            DuplicateError: If email already exists
+        """
+        user = self.get_user_by_id(user_id)
+
+        # Update email if provided
+        if user_data.email is not None and user_data.email != user.email:
+            # Check for duplicate email
+            existing = self.db.query(User).filter(
+                User.email == user_data.email,
+                User.id != user_id
+            ).first()
+            if existing:
+                raise DuplicateError("User", "email", user_data.email)
+            user.email = user_data.email
+
+        # Update full_name if provided
+        if user_data.full_name is not None:
+            user.full_name = user_data.full_name
+
+        # Update password if provided
+        if user_data.password is not None:
+            is_valid, error_msg = validate_password_strength(user_data.password)
+            if not is_valid:
+                raise ValidationError(error_msg, field="password")
+            user.hashed_password = get_password_hash(user_data.password)
+
+        # Update is_active if provided
+        if user_data.is_active is not None:
+            user.is_active = user_data.is_active
+
+        # Update role if provided
+        if user_data.role is not None:
+            user.role = user_data.role
+
+        self.db.commit()
+        self.db.refresh(user)
+
+        return user
+
+    def delete_user(self, user_id: int) -> None:
+        """
+        Delete a user account.
+
+        Args:
+            user_id: User ID to delete
+
+        Raises:
+            UserNotFoundError: If user not found
+        """
+        user = self.get_user_by_id(user_id)
+        self.db.delete(user)
+        self.db.commit()
