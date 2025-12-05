@@ -70,14 +70,14 @@ class OdooConnectionManager:
         """
         if not self._principal_client:
             raise OdooConnectionError(
-                "Principal Odoo not connected - call connect_principal() first",
-                is_session_expired=True
+                "No hay conexión a Odoo. Un administrador debe iniciar sesión primero.",
+                is_session_expired=False  # Not a session expiry, just not connected yet
             )
 
         if not self._principal_client.is_authenticated():
             raise OdooConnectionError(
-                "Principal Odoo session expired",
-                is_session_expired=True
+                "Sesión de Odoo expirada",
+                is_session_expired=True  # This IS a session expiry
             )
 
         return self._principal_client

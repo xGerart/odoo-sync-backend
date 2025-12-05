@@ -290,10 +290,19 @@ def search_product(
             detail=str(e)
         )
     except OdooConnectionError as e:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Sesión Odoo expirada. Por favor, cierra sesión y vuelve a iniciar sesión."
-        )
+        # Check if it's a session expiry or just no connection
+        if e.is_session_expired:
+            # Admin's Odoo session expired
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Sesión Odoo expirada. Por favor, cierra sesión y vuelve a iniciar sesión."
+            )
+        else:
+            # No Odoo connection established yet (bodeguero/cajero users)
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=str(e) or "No hay conexión a Odoo. Un administrador debe iniciar sesión primero."
+            )
     except OdooOperationError as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
