@@ -147,9 +147,13 @@ async def health_check():
     database_connected = True
     try:
         from app.core.database import engine
+        from sqlalchemy import text
         with engine.connect() as conn:
-            conn.execute("SELECT 1")
-    except Exception:
+            conn.execute(text("SELECT 1"))
+    except Exception as e:
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.error(f"Database health check failed: {str(e)}")
         database_connected = False
 
     # Check Odoo connections
