@@ -12,6 +12,7 @@ env/
 # Logs
 *.log
 sync_logs.log
+logs/
 
 # Reports folder (generated files)
 reports/*.pdf
@@ -43,3 +44,12 @@ test_*.py
 *.tgz
 *.tar.gz
 *.zip
+
+# Databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Uploads and generated files
+uploads/
+pdfs/
