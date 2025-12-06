@@ -58,7 +58,7 @@ class TransferService:
                     OdooModel.PRODUCT_PRODUCT,
                     domain=[['barcode', '=', item.barcode]],
                     fields=['id', 'name', 'qty_available', 'standard_price',
-                            'list_price', 'tracking', 'available_in_pos'],
+                            'list_price', 'type', 'tracking', 'available_in_pos'],
                     limit=1
                 )
 
@@ -165,7 +165,7 @@ class TransferService:
                     OdooModel.PRODUCT_PRODUCT,
                     domain=[['barcode', '=', item.barcode]],
                     fields=['id', 'name', 'qty_available', 'standard_price',
-                            'list_price', 'tracking', 'available_in_pos'],
+                            'list_price', 'type', 'tracking', 'available_in_pos'],
                     limit=1
                 )
 
@@ -247,91 +247,221 @@ class TransferService:
             products=product_details
         )
 
-    def confirm_transfer(self, items: List[TransferItem]) -> TransferResponse:
+    def confirm_transfer(
+        self,
+        items: List[TransferItem],
+        transfer_id: Optional[int] = None,
+        username: str = "admin"
+    ) -> TransferResponse:
         """
         Confirm transfer - ACTUALLY reduce inventory in principal and add to branch.
+        Now also captures before/after data and generates PDF report.
 
         Requires both principal and branch clients to be authenticated.
 
         Args:
             items: List of transfer items
+            transfer_id: Optional transfer ID for report
+            username: Username confirming the transfer
 
         Returns:
-            Transfer response with execution results
+            Transfer response with execution results and PDF report
 
         Raises:
             TransferError: If branch client not provided or transfer fails
         """
+        import logging
+        from datetime import datetime
+        logger = logging.getLogger(__name__)
+
+        logger.info(f"=== CONFIRM TRANSFER START ===")
+        logger.info(f"Transfer ID: {transfer_id}")
+        logger.info(f"User: {username}")
+        logger.info(f"Items to transfer: {len(items)}")
+        for idx, item in enumerate(items):
+            logger.info(f"  Item {idx+1}: {item.barcode} x {item.quantity}")
+
         if not self.branch_client:
             raise TransferError("Branch client required for transfer confirmation")
+
+        # Data for PDF report
+        origin_before = []
+        origin_after = []
+        destination_before = []
+        destination_after = []
+        new_products = []
 
         processed_products = []
         errors = []
 
         for item in items:
+            logger.info(f"Processing item: {item.barcode} x {item.quantity}")
             try:
+                logger.info(f"  Step 1: Reading product from principal...")
                 # Get product from principal
-                principal_products = self.principal_client.search_read(
-                    OdooModel.PRODUCT_PRODUCT,
-                    domain=[['barcode', '=', item.barcode]],
-                    fields=['id', 'name', 'qty_available', 'standard_price',
-                            'list_price', 'tracking', 'available_in_pos'],
-                    limit=1
-                )
+                # Try to read with both type fields for version compatibility
+                base_fields = ['id', 'name', 'qty_available', 'standard_price',
+                              'list_price', 'tracking', 'available_in_pos']
 
-                if not principal_products:
+                principal_product = None
+
+                # Try with 'detailed_type' first (Odoo 17+)
+                try:
+                    logger.debug(f"  Trying to read with 'detailed_type' field...")
+                    principal_products = self.principal_client.search_read(
+                        OdooModel.PRODUCT_PRODUCT,
+                        domain=[['barcode', '=', item.barcode]],
+                        fields=base_fields + ['detailed_type'],
+                        limit=1
+                    )
+                    if principal_products:
+                        principal_product = principal_products[0]
+                        logger.info(f"  ✓ Product found with detailed_type field")
+                except Exception as e:
+                    logger.debug(f"  'detailed_type' not available: {str(e)[:100]}")
+                    # Field doesn't exist, will try with 'type' instead
+                    pass
+
+                # Fallback to 'type' field (Odoo 16 and earlier)
+                if not principal_product:
+                    try:
+                        logger.debug(f"  Trying to read with 'type' field...")
+                        principal_products = self.principal_client.search_read(
+                            OdooModel.PRODUCT_PRODUCT,
+                            domain=[['barcode', '=', item.barcode]],
+                            fields=base_fields + ['type'],
+                            limit=1
+                        )
+                        if principal_products:
+                            principal_product = principal_products[0]
+                            logger.info(f"  ✓ Product found with type field")
+                    except Exception as e:
+                        logger.error(f"  ✗ Error reading product: {str(e)}")
+                        errors.append(f"Error reading product {item.barcode}: {str(e)}")
+                        continue
+
+                if not principal_product:
+                    logger.error(f"  ✗ Product not found in principal: {item.barcode}")
                     errors.append(f"Product not found in principal: {item.barcode}")
                     continue
 
-                principal_product = principal_products[0]
+                logger.info(f"  Step 2: Capturing origin snapshot BEFORE...")
+                # CAPTURE: Origin BEFORE
+                origin_snapshot_before = self._capture_product_snapshot(
+                    self.principal_client,
+                    item.barcode,
+                    principal_product['id']
+                )
+                if origin_snapshot_before:
+                    origin_snapshot_before['quantity'] = item.quantity  # Add transfer quantity
+                    origin_before.append(origin_snapshot_before)
+                    logger.info(f"  ✓ Origin snapshot captured")
+
                 principal_stock_before = principal_product.get('qty_available', 0)
+                logger.info(f"  Stock available: {principal_stock_before}")
 
                 # Validate stock again
                 if item.quantity > principal_stock_before:
+                    logger.error(f"  ✗ Insufficient stock: requested {item.quantity}, available {principal_stock_before}")
                     errors.append(
                         f"Insufficient stock in principal for {principal_product['name']}: "
                         f"requested {item.quantity}, available {principal_stock_before}"
                     )
                     continue
 
+                logger.info(f"  Step 3: Reducing inventory in principal ({item.quantity} units)...")
                 # STEP 1: Reduce inventory in principal
                 self._reduce_stock(
                     self.principal_client,
                     principal_product['id'],
                     item.quantity
                 )
+                logger.info(f"  ✓ Inventory reduced in principal")
 
+                logger.info(f"  Step 4: Capturing origin snapshot AFTER...")
+                # CAPTURE: Origin AFTER
+                origin_snapshot_after = self._capture_product_snapshot(
+                    self.principal_client,
+                    item.barcode,
+                    principal_product['id']
+                )
+                if origin_snapshot_after:
+                    origin_after.append(origin_snapshot_after)
+                    logger.info(f"  ✓ Origin AFTER snapshot captured")
+
+                logger.info(f"  Step 5: Searching product in branch...")
                 # STEP 2: Find or create product in branch
                 branch_products = self.branch_client.search_read(
                     OdooModel.PRODUCT_PRODUCT,
                     domain=[['barcode', '=', item.barcode]],
-                    fields=['id', 'name', 'qty_available'],
+                    fields=['id', 'name', 'qty_available', 'standard_price', 'list_price'],
                     limit=1
                 )
 
-                if not branch_products:
-                    # Create product in branch
+                is_new_product = not branch_products
+
+                if is_new_product:
+                    logger.info(f"  → Product NOT found in branch - will create new")
+                    # Product doesn't exist in branch - will be created
                     branch_product_id = self._create_product_in_branch(
                         item.barcode,
                         principal_product
                     )
                     branch_stock_before = 0
-                else:
-                    branch_product_id = branch_products[0]['id']
-                    branch_stock_before = branch_products[0].get('qty_available', 0)
 
-                    # Sync product data with principal
+                    # Add to new products list for PDF
+                    new_products.append({
+                        'barcode': item.barcode,
+                        'name': principal_product['name'],
+                        'standard_price': principal_product['standard_price'],
+                        'list_price': principal_product['list_price'],
+                        'quantity': item.quantity
+                    })
+                else:
+                    logger.info(f"  → Product FOUND in branch - will update")
+                    # Product exists - capture BEFORE updating
+                    branch_product = branch_products[0]
+                    branch_product_id = branch_product['id']
+                    logger.info(f"  Branch product ID: {branch_product_id}")
+
+                    dest_snapshot_before = self._capture_product_snapshot(
+                        self.branch_client,
+                        item.barcode,
+                        branch_product_id
+                    )
+                    if dest_snapshot_before:
+                        destination_before.append(dest_snapshot_before)
+                        logger.info(f"  ✓ Destination BEFORE snapshot captured")
+
+                    branch_stock_before = branch_product.get('qty_available', 0)
+                    logger.info(f"  Current branch stock: {branch_stock_before}")
+
+                    # Sync product data with principal (updates prices)
+                    logger.info(f"  Step 6: Syncing product data to branch...")
                     self._sync_product_data(
                         branch_product_id,
                         principal_product
                     )
+                    logger.info(f"  ✓ Product data synced")
 
+                logger.info(f"  Step 7: Adding inventory to branch ({item.quantity} units)...")
                 # STEP 3: Add inventory to branch
                 self._add_stock(
                     self.branch_client,
                     branch_product_id,
                     item.quantity
                 )
+                logger.info(f"  ✓ Inventory added to branch")
+
+                # CAPTURE: Destination AFTER (for updated products)
+                if not is_new_product:
+                    dest_snapshot_after = self._capture_product_snapshot(
+                        self.branch_client,
+                        item.barcode,
+                        branch_product_id
+                    )
+                    if dest_snapshot_after:
+                        destination_after.append(dest_snapshot_after)
 
                 # Add to processed list
                 processed_products.append({
@@ -345,19 +475,47 @@ class TransferService:
                 })
 
             except Exception as e:
+                logger.error(f"Error confirming {item.barcode}: {str(e)}")
                 errors.append(f"Error confirming {item.barcode}: {str(e)}")
-                # Try to rollback if possible (this is basic, not transactional)
 
         if not processed_products:
+            error_details = "; ".join(errors) if errors else "Unknown error"
             return TransferResponse(
                 success=False,
-                message="No products could be confirmed for transfer",
+                message=f"No products could be confirmed for transfer. Errors: {error_details}",
                 processed_count=0,
                 inventory_reduced=False
             )
 
         # Generate XML for record
         xml_content = self._generate_transfer_xml(processed_products)
+
+        # Generate PDF report
+        pdf_content = None
+        pdf_filename = None
+        try:
+            transfer_data = {
+                'id': transfer_id or 'new',
+                'date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                'username': username,
+                'confirmed_by': username,
+                'destination': 'Sucursal',
+                'total_items': len(processed_products),
+                'total_quantity': sum(p['quantity'] for p in processed_products)
+            }
+
+            pdf_content, pdf_filename = self._generate_transfer_report_pdf(
+                transfer_data=transfer_data,
+                origin_before=origin_before,
+                origin_after=origin_after,
+                destination_before=destination_before,
+                destination_after=destination_after,
+                new_products=new_products
+            )
+            logger.info(f"PDF report generated: {pdf_filename}")
+        except Exception as e:
+            logger.error(f"Error generating PDF report: {str(e)}")
+            # Continue even if PDF generation fails
 
         message = f"Transfer CONFIRMED! {len(processed_products)} products. "
         message += "Inventory reduced in principal and added to branch."
@@ -368,6 +526,8 @@ class TransferService:
             success=True,
             message=message,
             xml_content=xml_content,
+            pdf_content=pdf_content,
+            pdf_filename=pdf_filename,
             processed_count=len(processed_products),
             inventory_reduced=True
         )
@@ -514,6 +674,8 @@ class TransferService:
         Returns:
             List of pending transfers
         """
+        from sqlalchemy.orm import joinedload
+
         if not self.db:
             raise TransferError("Database session required for fetching transfers")
 
@@ -525,7 +687,8 @@ class TransferService:
             # Default to only pending if no status specified
             query = query.filter(PendingTransfer.status == TransferStatus.PENDING)
 
-        transfers = query.order_by(PendingTransfer.created_at.desc()).all()
+        # Eager load items to avoid lazy loading issues
+        transfers = query.options(joinedload(PendingTransfer.items)).order_by(PendingTransfer.created_at.desc()).all()
 
         return PendingTransferListResponse(
             transfers=[PendingTransferResponse.model_validate(t) for t in transfers],
@@ -692,33 +855,131 @@ class TransferService:
                 }
             )
 
+    def _get_product_type_field_for_branch(self) -> dict:
+        """
+        Auto-detect correct product type field based on Odoo version.
+        This method queries Odoo to find which field and values are available.
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+
+        try:
+            # Get field info for product.template to detect available fields
+            field_info = self.branch_client.execute_kw(
+                OdooModel.PRODUCT_TEMPLATE,
+                'fields_get',
+                args=[],  # Get all fields
+                kwargs={'attributes': ['type', 'selection', 'string']}
+            )
+
+            # Check 'type' field first
+            if 'type' in field_info and 'selection' in field_info['type']:
+                selection_values = field_info['type']['selection']
+                logger.info(f"[TYPE_DETECT] Found 'type' field with values: {selection_values}")
+
+                available_types = [v for v, l in selection_values]
+
+                # Try different type values in order of preference for storable products
+                test_types = ['product', 'consu', 'service']
+
+                for test_type in test_types:
+                    if test_type in available_types:
+                        logger.info(f"[TYPE_DETECT] Will use: type='{test_type}'")
+
+                        # For 'consu' type, check if we need to set is_storable
+                        if test_type == 'consu' and 'is_storable' in field_info:
+                            logger.info(f"[TYPE_DETECT] Adding is_storable=True for consu type")
+                            return {'type': test_type, 'is_storable': True}
+
+                        return {'type': test_type}
+
+                # Fallback to first available
+                if available_types:
+                    fallback_type = available_types[0]
+                    logger.warning(f"[TYPE_DETECT] Fallback to: type='{fallback_type}'")
+                    return {'type': fallback_type}
+
+            # Check 'detailed_type' field for newer versions
+            elif 'detailed_type' in field_info:
+                logger.info(f"[TYPE_DETECT] Found 'detailed_type' field - using 'product'")
+                return {'detailed_type': 'product'}
+
+            else:
+                logger.error(f"[TYPE_DETECT] No 'type' or 'detailed_type' field found!")
+                return {}  # Return empty dict, let Odoo use defaults
+
+        except Exception as e:
+            logger.error(f"[TYPE_DETECT] Error detecting product type field: {e}")
+            return {}  # Return empty dict on error
+
     def _create_product_in_branch(self, barcode: str, principal_product: Dict) -> int:
-        """Create product in branch with data from principal."""
+        """
+        Create product in branch with data from principal.
+        ALWAYS creates products as storable (product type) to enable inventory tracking.
+        Handles Odoo version compatibility (type vs detailed_type fields).
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+
+        # Get principal product type for logging
+        principal_type = principal_product.get('detailed_type') or principal_product.get('type', 'consu')
+
+        logger.info(f"[CREATE_BRANCH] Creating product in branch: {principal_product['name']} (barcode: {barcode})")
+        logger.info(f"[CREATE_BRANCH] Principal type: {principal_type}")
+
+        # Build basic product data
         product_data = {
             'name': principal_product['name'],
             'barcode': barcode,
             'standard_price': format_decimal_for_odoo(principal_product['standard_price']),
             'list_price': format_decimal_for_odoo(principal_product['list_price']),
-            'type': 'consu',
-            'tracking': 'none',  # Default for branch
-            'available_in_pos': True
+            'tracking': principal_product.get('tracking', 'none'),
+            'available_in_pos': True,
+            'sale_ok': True,
+            'purchase_ok': True,
         }
 
-        return self.branch_client.create(OdooModel.PRODUCT_PRODUCT, product_data)
+        # Auto-detect and add correct type field for this Odoo version
+        type_field = self._get_product_type_field_for_branch()
+        product_data.update(type_field)
+
+        logger.info(f"[CREATE_BRANCH] Creating product with data: {type_field}")
+
+        # Create product (this creates both template and variant)
+        product_id = self.branch_client.create(OdooModel.PRODUCT_PRODUCT, product_data)
+        logger.info(f"[CREATE_BRANCH] ✅ Product created with ID: {product_id}")
+
+        return product_id
 
     def _sync_product_data(self, branch_product_id: int, principal_product: Dict) -> None:
-        """Sync product data from principal to branch."""
+        """
+        Sync product data from principal to branch.
+        Updates name, cost (standard_price), sale price (list_price), and ensures product is storable.
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+
         update_data = {
             'name': principal_product['name'],
             'standard_price': format_decimal_for_odoo(principal_product['standard_price']),
             'list_price': format_decimal_for_odoo(principal_product['list_price'])
         }
 
+        logger.info(f"[SYNC_PRODUCT] Updating branch product {branch_product_id} with: {update_data}")
+
         self.branch_client.write(
             OdooModel.PRODUCT_PRODUCT,
             [branch_product_id],
             update_data
         )
+
+        logger.info(f"[SYNC_PRODUCT] Product {branch_product_id} updated successfully")
+
+        # Note: We don't try to change product type here because:
+        # 1. In Odoo saas~18.2, type field is read-only
+        # 2. Changing type after creation can cause issues
+        # 3. Existing products should already have correct type
+        # If a consumable product needs to be storable, delete and recreate it
 
     def _generate_transfer_xml(self, products: List[Dict]) -> str:
         """Generate XML content for transfer."""
@@ -737,3 +998,96 @@ class TransferService:
         xml_lines.append('</transfer>')
 
         return '\n'.join(xml_lines)
+
+    def _capture_product_snapshot(
+        self,
+        client: 'OdooClient',
+        barcode: str,
+        product_id: Optional[int] = None
+    ) -> Optional[Dict]:
+        """
+        Capture complete product snapshot (stock, prices).
+
+        Args:
+            client: Odoo client (principal or branch)
+            barcode: Product barcode
+            product_id: Optional product ID (faster if known)
+
+        Returns:
+            Dict with product data or None if not found
+        """
+        try:
+            if product_id:
+                products = client.read(
+                    OdooModel.PRODUCT_PRODUCT,
+                    [product_id],
+                    fields=['id', 'name', 'barcode', 'qty_available',
+                            'standard_price', 'list_price']
+                )
+            else:
+                products = client.search_read(
+                    OdooModel.PRODUCT_PRODUCT,
+                    domain=[['barcode', '=', barcode]],
+                    fields=['id', 'name', 'barcode', 'qty_available',
+                            'standard_price', 'list_price'],
+                    limit=1
+                )
+
+            if not products:
+                return None
+
+            product = products[0]
+            return {
+                'id': product.get('id'),
+                'name': product.get('name'),
+                'barcode': product.get('barcode'),
+                'qty_available': product.get('qty_available', 0),
+                'standard_price': product.get('standard_price', 0),
+                'list_price': product.get('list_price', 0)
+            }
+
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"Error capturing product snapshot for {barcode}: {e}")
+            return None
+
+    def _generate_transfer_report_pdf(
+        self,
+        transfer_data: Dict[str, Any],
+        origin_before: List[Dict],
+        origin_after: List[Dict],
+        destination_before: List[Dict],
+        destination_after: List[Dict],
+        new_products: List[Dict]
+    ) -> tuple[str, str]:
+        """
+        Generate PDF report for transfer.
+
+        Returns:
+            Tuple of (base64_pdf_content, pdf_filename)
+        """
+        import base64
+        from datetime import datetime
+        from app.utils.pdf_templates import TransferReport
+
+        # Generate PDF
+        report = TransferReport()
+        pdf_buffer = report.generate(
+            transfer_data=transfer_data,
+            origin_before=origin_before,
+            origin_after=origin_after,
+            destination_before=destination_before,
+            destination_after=destination_after,
+            new_products=new_products
+        )
+
+        # Convert to base64
+        pdf_content = base64.b64encode(pdf_buffer.getvalue()).decode('utf-8')
+
+        # Generate filename
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        transfer_id = transfer_data.get('id', 'new')
+        pdf_filename = f"transfer_report_{transfer_id}_{timestamp}.pdf"
+
+        return pdf_content, pdf_filename

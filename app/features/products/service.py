@@ -99,11 +99,16 @@ class ProductService:
         Raises:
             ValidationError: If barcode is invalid
         """
+        import logging
+        logger = logging.getLogger(__name__)
+
+        logger.info(f"[SERVICE] Validating barcode: {barcode}")
         if not validate_barcode(barcode):
             raise ValidationError("Invalid barcode format", field="barcode")
 
         try:
             # Search in product.product first
+            logger.info(f"[SERVICE] Searching in Odoo for barcode: {barcode}")
             products = self.client.search_read(
                 OdooModel.PRODUCT_PRODUCT,
                 domain=[
@@ -115,11 +120,18 @@ class ProductService:
                         'list_price', 'tracking', 'available_in_pos', 'image_1920']
             )
 
+            logger.info(f"[SERVICE] Found {len(products)} products")
+
             if products:
                 product = products[0]
-                # Calculate display price with IVA
-                display_price = calculate_price_with_iva(product['list_price'])
+                logger.info(f"[SERVICE] Product data: {product}")
 
+                # Calculate display price with IVA
+                logger.info(f"[SERVICE] Calculating display price from list_price: {product['list_price']}")
+                display_price = calculate_price_with_iva(product['list_price'])
+                logger.info(f"[SERVICE] Display price calculated: {display_price}")
+
+                logger.info("[SERVICE] Creating ProductResponse...")
                 return ProductResponse(
                     id=product['id'],
                     name=product['name'],
@@ -130,12 +142,16 @@ class ProductService:
                     display_price=display_price,
                     tracking=product.get('tracking'),
                     available_in_pos=product.get('available_in_pos', False),
-                    image_1920=product.get('image_1920')
+                    image_1920=product.get('image_1920') or None  # Odoo returns False when no image
                 )
 
+            logger.info("[SERVICE] No products found, returning None")
             return None
 
         except Exception as e:
+            logger.error(f"[SERVICE] Error in search_product_by_barcode: {str(e)}")
+            import traceback
+            logger.error(f"[SERVICE] Traceback: {traceback.format_exc()}")
             raise OdooOperationError(
                 operation="search_product",
                 message=str(e)

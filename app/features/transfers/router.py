@@ -265,8 +265,12 @@ def confirm_transfer(
 
         service = TransferService(principal_client, branch_client, db=db)
 
-        # Execute the transfer
-        result = service.confirm_transfer(request.products)
+        # Execute the transfer with report generation
+        result = service.confirm_transfer(
+            items=request.products,
+            transfer_id=transfer_id,
+            username=current_user.username
+        )
 
         # If successful and transfer_id provided, update status in database
         if result.success and transfer_id:
