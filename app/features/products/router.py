@@ -175,7 +175,7 @@ async def sync_products(
             mode = QuantityMode.REPLACE
 
         # Sync products
-        result = service.sync_products_bulk(request.products)
+        result = service.sync_products_bulk(request.products, username=current_user.username)
 
         return result
 

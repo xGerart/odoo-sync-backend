@@ -12,6 +12,7 @@ class ProductData(BaseModel):
     cantidad: float = Field(..., ge=0, description="Quantity")
     codigo_auxiliar: Optional[str] = Field(None, description="Product barcode/SKU")
     precio_unitario: float = Field(..., gt=0, description="Unit price")
+    precio_total_linea: Optional[float] = Field(None, description="Total line price (for consolidation)")
 
     class Config:
         json_schema_extra = {
@@ -19,7 +20,8 @@ class ProductData(BaseModel):
                 "descripcion": "Producto de ejemplo",
                 "cantidad": 10.0,
                 "codigo_auxiliar": "123456789",
-                "precio_unitario": 5.50
+                "precio_unitario": 5.50,
+                "precio_total_linea": 55.00
             }
         }
 
@@ -119,6 +121,16 @@ class SyncResult(BaseModel):
     product_name: Optional[str] = None
     barcode: Optional[str] = None
     error_details: Optional[str] = None
+    # Additional fields for PDF report
+    standard_price: Optional[float] = None
+    list_price: Optional[float] = None
+    qty_available: Optional[float] = None
+    old_price: Optional[float] = None
+    new_price: Optional[float] = None
+    old_stock: Optional[float] = None
+    new_stock: Optional[float] = None
+    price_updated: Optional[bool] = None
+    stock_updated: Optional[bool] = None
 
     class Config:
         json_schema_extra = {
@@ -141,6 +153,7 @@ class SyncResponse(BaseModel):
     updated_count: int
     errors_count: int
     pdf_filename: Optional[str] = None
+    pdf_content: Optional[str] = None
 
     class Config:
         json_schema_extra = {
@@ -150,7 +163,8 @@ class SyncResponse(BaseModel):
                 "created_count": 10,
                 "updated_count": 12,
                 "errors_count": 3,
-                "pdf_filename": "stock_report_20240115_103000.pdf"
+                "pdf_filename": "sync_report_20240115_103000.pdf",
+                "pdf_content": "base64_encoded_pdf_content"
             }
         }
 

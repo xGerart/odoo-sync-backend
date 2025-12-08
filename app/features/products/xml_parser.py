@@ -49,6 +49,9 @@ class XMLInvoiceParser:
             else:  # GENERIC
                 products = self._parse_generic_format(xml_dict)
 
+            # Consolidate duplicate products (sum quantities and calculate real cost)
+            products = self._consolidate_duplicate_products(products)
+
             return XMLParseResponse(
                 products=products,
                 total_found=len(products),
@@ -112,6 +115,11 @@ class XMLInvoiceParser:
             cantidad = float(detalle.get('cantidad', 0))
             precio_unitario = float(detalle.get('precioUnitario', 0))
 
+            # Get total line price (after discounts)
+            precio_total_linea = detalle.get('precioTotalSinImpuesto')
+            if precio_total_linea is not None:
+                precio_total_linea = float(precio_total_linea)
+
             # Try codigoAuxiliar first (D'Mujeres), then codigoPrincipal (LANSEY/otros)
             codigo_auxiliar = detalle.get('codigoAuxiliar', '').strip()
             if not codigo_auxiliar:
@@ -128,7 +136,8 @@ class XMLInvoiceParser:
                 descripcion=descripcion,
                 cantidad=cantidad,
                 codigo_auxiliar=codigo_auxiliar,
-                precio_unitario=precio_unitario
+                precio_unitario=precio_unitario,
+                precio_total_linea=precio_total_linea
             )
 
         except Exception:
@@ -213,6 +222,11 @@ class XMLInvoiceParser:
             cantidad = float(detalle.get('cantidad', 0))
             precio_unitario = float(detalle.get('precioUnitario', 0))
 
+            # Get total line price (after discounts)
+            precio_total_linea = detalle.get('precioTotalSinImpuesto')
+            if precio_total_linea is not None:
+                precio_total_linea = float(precio_total_linea)
+
             logger.info(f"Extracting LANSEY product: desc={descripcion[:50]}, cant={cantidad}, precio={precio_unitario}")
 
             # Try codigoPrincipal first (LANSEY), then codigoAuxiliar (D'Mujeres/otros)
@@ -233,7 +247,8 @@ class XMLInvoiceParser:
                 descripcion=descripcion,
                 cantidad=cantidad,
                 codigo_auxiliar=codigo_principal,
-                precio_unitario=precio_unitario
+                precio_unitario=precio_unitario,
+                precio_total_linea=precio_total_linea
             )
 
         except Exception as e:
@@ -300,6 +315,16 @@ class XMLInvoiceParser:
                 0
             )
 
+            # Get total line price
+            precio_total_linea = (
+                item.get('precioTotalSinImpuesto') or
+                item.get('totalPrice') or
+                item.get('lineTotal') or
+                None
+            )
+            if precio_total_linea is not None:
+                precio_total_linea = float(precio_total_linea)
+
             codigo = (
                 item.get('codigoAuxiliar') or
                 item.get('codigoPrincipal') or
@@ -318,11 +343,95 @@ class XMLInvoiceParser:
                 descripcion=descripcion,
                 cantidad=cantidad,
                 codigo_auxiliar=codigo,
-                precio_unitario=precio_unitario
+                precio_unitario=precio_unitario,
+                precio_total_linea=precio_total_linea
             )
 
         except Exception:
             return None
+
+    def _consolidate_duplicate_products(self, products: List[ProductData]) -> List[ProductData]:
+        """
+        Consolidate duplicate products by barcode.
+
+        When there are multiple lines with the same barcode (e.g., gifts with price 0
+        and paid items), this method:
+        1. Groups all lines by barcode
+        2. Sums all quantities
+        3. Sums all totals (cantidad * precio_unitario)
+        4. Calculates real unit cost: total_sum / quantity_sum
+
+        Args:
+            products: List of parsed products (may contain duplicates)
+
+        Returns:
+            List of consolidated products (unique barcodes)
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+
+        if not products:
+            return products
+
+        # Group products by barcode
+        products_by_barcode = {}
+
+        for product in products:
+            barcode = product.codigo_auxiliar
+
+            if barcode not in products_by_barcode:
+                products_by_barcode[barcode] = []
+
+            products_by_barcode[barcode].append(product)
+
+        # Consolidate duplicates and calculate real costs
+        consolidated = []
+
+        for barcode, product_list in products_by_barcode.items():
+            # Always consolidate to calculate real unit cost from total line price
+            total_quantity = 0.0
+            total_amount = 0.0
+            description = product_list[0].descripcion  # Use first description
+
+            if len(product_list) > 1:
+                logger.info(f"Consolidating {len(product_list)} entries for barcode {barcode}")
+
+            for p in product_list:
+                # Use precio_total_linea if available (accounts for discounts)
+                # Otherwise calculate from quantity × unit price
+                if p.precio_total_linea is not None:
+                    line_total = p.precio_total_linea
+                else:
+                    line_total = p.cantidad * p.precio_unitario
+
+                total_quantity += p.cantidad
+                total_amount += line_total
+
+                if len(product_list) > 1 or p.precio_total_linea is not None:
+                    logger.info(f"  Line: qty={p.cantidad}, unit_price={p.precio_unitario}, line_total={line_total}")
+
+            # Calculate real unit cost
+            if total_quantity > 0:
+                real_unit_cost = total_amount / total_quantity
+            else:
+                real_unit_cost = 0.0
+
+            if len(product_list) > 1 or product_list[0].precio_total_linea is not None:
+                logger.info(f"  Calculated real cost: total_qty={total_quantity}, total_amount={total_amount}, real_unit_cost={real_unit_cost}")
+
+            # Create consolidated product
+            consolidated_product = ProductData(
+                descripcion=description,
+                cantidad=total_quantity,
+                codigo_auxiliar=barcode,
+                precio_unitario=real_unit_cost
+            )
+
+            consolidated.append(consolidated_product)
+
+        logger.info(f"Consolidation complete: {len(products)} lines → {len(consolidated)} unique products")
+
+        return consolidated
 
     def _remove_factura_wrapper(self, xml_content: str) -> str:
         """

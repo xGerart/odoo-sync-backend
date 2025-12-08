@@ -382,7 +382,7 @@ class ProductService:
             existing = self.client.search_read(
                 OdooModel.PRODUCT_PRODUCT,
                 domain=[['barcode', '=', barcode]],
-                fields=['id', 'list_price', 'name'],
+                fields=['id', 'list_price', 'standard_price', 'qty_available', 'name'],
                 limit=1
             )
             logger.info(f"Search result: {existing if existing else 'Not found'}")
@@ -391,28 +391,43 @@ class ProductService:
                 # Update existing
                 product_id = existing[0]['id']
                 current_list_price = float(existing[0].get('list_price', 0))
+                current_standard_price = float(existing[0].get('standard_price', 0))
+                old_stock = float(existing[0].get('qty_available', 0))
+
                 new_list_price = format_decimal_for_odoo(product_mapped['list_price'])
+                new_standard_price = format_decimal_for_odoo(product_mapped['standard_price'])
 
                 update_data = {
-                    'standard_price': format_decimal_for_odoo(product_mapped['standard_price']),
+                    'standard_price': new_standard_price,
                     'available_in_pos': True,
                     'barcode': barcode
                 }
 
-                # Price protection
+                # Track if price was updated
+                price_updated = False
+                # Price protection: only update if new price is higher
                 if new_list_price > current_list_price:
                     update_data['list_price'] = new_list_price
+                    price_updated = True
 
                 self.client.write(OdooModel.PRODUCT_PRODUCT, [product_id], update_data)
 
                 # Update stock
+                new_stock = old_stock
+                stock_updated = False
                 if product_mapped.get('qty_available', 0) > 0:
+                    new_stock = product_mapped['qty_available']
+                    stock_updated = (old_stock != new_stock)
                     self._update_stock_quantity(
                         product_id,
-                        product_mapped['qty_available'],
+                        new_stock,
                         product_mapped.get('quantity_mode', 'replace'),
                         product_mapped['name']
                     )
+
+                # Determine final values that are actually in Odoo
+                final_list_price = float(new_list_price) if price_updated else current_list_price
+                final_standard_price = float(new_standard_price)
 
                 return SyncResult(
                     success=True,
@@ -420,27 +435,33 @@ class ProductService:
                     product_id=product_id,
                     action="updated",
                     product_name=product_mapped['name'],
-                    barcode=barcode
+                    barcode=barcode,
+                    standard_price=final_standard_price,
+                    list_price=final_list_price,
+                    qty_available=new_stock,
+                    old_price=current_list_price,
+                    new_price=final_list_price,
+                    old_stock=old_stock,
+                    new_stock=new_stock,
+                    price_updated=price_updated,
+                    stock_updated=stock_updated
                 )
 
             else:
                 # Create new storable product (tracks inventory)
-                # Key fields:
-                # - type: 'consu' = Goods (tangible products)
-                # - is_storable: True = Enable inventory tracking
-                # - tracking: 'none' = Track by quantity (not by lots/serials)
                 product_data = {
                     'name': product_mapped['name'],
                     'standard_price': format_decimal_for_odoo(product_mapped['standard_price']),
                     'list_price': format_decimal_for_odoo(product_mapped['list_price']),
                     'barcode': barcode,
-                    'type': 'consu',  # Goods (tangible products)
-                    'is_storable': True,  # Enable inventory tracking
                     'tracking': 'none',  # Track by quantity only (no lots/serials)
                     'available_in_pos': True,
                     'sale_ok': True,  # Can be sold
                     'purchase_ok': True,  # Can be purchased
                 }
+
+                # Use auto-detection for product type field (handles Odoo version differences)
+                product_data.update(self.client._get_product_type_field())
 
                 logger.info(f"Product data to create: {product_data}")
 
@@ -476,7 +497,10 @@ class ProductService:
                     product_id=product_id,
                     action="created",
                     product_name=product_mapped['name'],
-                    barcode=barcode
+                    barcode=barcode,
+                    standard_price=float(format_decimal_for_odoo(product_mapped['standard_price'])),
+                    list_price=float(format_decimal_for_odoo(product_mapped['list_price'])),
+                    qty_available=qty
                 )
 
         except Exception as e:
@@ -492,17 +516,22 @@ class ProductService:
                 error_details=str(e)[:500]
             )
 
-    def sync_products_bulk(self, products: List[Dict[str, Any]]) -> SyncResponse:
+    def sync_products_bulk(self, products: List[Dict[str, Any]], username: str = "Sistema") -> SyncResponse:
         """
         Sync multiple products.
 
         Args:
             products: List of mapped product data
+            username: Username performing the sync
 
         Returns:
-            Sync response with results
+            Sync response with results and PDF report
         """
         import logging
+        import base64
+        from datetime import datetime
+        from app.utils.pdf_templates.sync_report import SyncReport
+
         logger = logging.getLogger(__name__)
 
         logger.info(f"Starting bulk sync of {len(products)} products")
@@ -530,12 +559,88 @@ class ProductService:
 
         logger.info(f"Bulk sync completed: {created_count} created, {updated_count} updated, {errors_count} errors")
 
+        # Generate PDF report
+        pdf_content = None
+        pdf_filename = None
+
+        try:
+            # Prepare data for PDF
+            sync_data = {
+                'date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                'user': username,
+                'source': 'Odoo Principal',
+                'total_processed': len(products),
+                'created_count': created_count,
+                'updated_count': updated_count,
+                'errors_count': errors_count
+            }
+
+            # Filter results by type
+            created_products = [
+                {
+                    'barcode': r.barcode,
+                    'product_name': r.product_name,
+                    'standard_price': r.standard_price or 0,
+                    'list_price': r.list_price or 0,
+                    'qty_available': r.qty_available or 0
+                }
+                for r in results if r.action == "created" and r.success
+            ]
+
+            updated_products = [
+                {
+                    'barcode': r.barcode,
+                    'product_name': r.product_name,
+                    'standard_price': r.standard_price or 0,
+                    'list_price': r.list_price or 0,
+                    'qty_available': r.qty_available or 0,
+                    'old_price': r.old_price or 0,
+                    'new_price': r.new_price or 0,
+                    'old_stock': r.old_stock or 0,
+                    'new_stock': r.new_stock or 0,
+                    'price_updated': r.price_updated or False,
+                    'stock_updated': r.stock_updated or False
+                }
+                for r in results if r.action == "updated" and r.success
+            ]
+
+            error_products = [
+                {
+                    'barcode': r.barcode,
+                    'product_name': r.product_name,
+                    'error_details': r.error_details or r.message
+                }
+                for r in results if r.action == "error" or not r.success
+            ]
+
+            # Generate PDF
+            report = SyncReport()
+            pdf_buffer = report.generate(
+                sync_data=sync_data,
+                created_products=created_products,
+                updated_products=updated_products,
+                error_products=error_products
+            )
+
+            # Encode to base64
+            pdf_content = base64.b64encode(pdf_buffer.read()).decode('utf-8')
+            pdf_filename = f"sync_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+
+            logger.info(f"PDF report generated: {pdf_filename}")
+
+        except Exception as e:
+            logger.error(f"Error generating PDF report: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
+
         return SyncResponse(
             results=results,
             total_processed=len(products),
             created_count=created_count,
             updated_count=updated_count,
-            errors_count=errors_count
+            errors_count=errors_count,
+            pdf_filename=pdf_filename,
+            pdf_content=pdf_content
         )
 
     def _update_stock_quantity(
