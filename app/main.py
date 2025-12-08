@@ -20,6 +20,7 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stdout)]
 )
 from app.core.database import init_db, close_db
+from app.migrations.runner import run_migrations
 from app.core.exceptions import AppException
 from app.middleware.error_handler import (
     app_exception_handler,
@@ -53,6 +54,13 @@ async def lifespan(app: FastAPI):
     # Startup
     print(f"🚀 Starting {settings.APP_NAME} v{settings.APP_VERSION}")
     print(f"📝 Environment: {settings.ENVIRONMENT}")
+
+    # Run database migrations first
+    try:
+        run_migrations()
+    except Exception as e:
+        print(f"❌ Migration failed: {e}")
+        print(f"⚠️  Continuing startup, but some features may not work correctly")
 
     # Initialize database
     try:
