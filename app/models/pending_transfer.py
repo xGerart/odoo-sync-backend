@@ -17,7 +17,8 @@ def _get_ecuador_now():
 
 class TransferStatus(str, Enum):
     """Transfer status enum."""
-    PENDING = "pending"
+    PENDING_VERIFICATION = "pending_verification"  # Awaiting bodeguero verification (cajero transfers)
+    PENDING = "pending"  # Awaiting admin confirmation
     CONFIRMED = "confirmed"
     CANCELLED = "cancelled"
 
@@ -33,6 +34,7 @@ class PendingTransfer(Base):
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=True)  # Nullable for Odoo admins
     username = Column(String(50), nullable=False)  # For easy display
+    created_by_role = Column(String(20), nullable=True)  # 'admin', 'bodeguero', 'cajero'
     status = Column(
         SQLEnum(TransferStatus, values_callable=lambda obj: [e.value for e in obj]),
         nullable=False,
@@ -41,6 +43,8 @@ class PendingTransfer(Base):
     )
     created_at = Column(DateTime, default=_get_ecuador_now, nullable=False)
     updated_at = Column(DateTime, default=_get_ecuador_now, onupdate=_get_ecuador_now, nullable=False)
+    verified_at = Column(DateTime, nullable=True)
+    verified_by = Column(String(50), nullable=True)  # Bodeguero username who verified
     confirmed_at = Column(DateTime, nullable=True)
     confirmed_by = Column(String(50), nullable=True)  # Admin username who confirmed
 
@@ -56,9 +60,12 @@ class PendingTransfer(Base):
             "id": self.id,
             "user_id": self.user_id,
             "username": self.username,
+            "created_by_role": self.created_by_role,
             "status": self.status.value if isinstance(self.status, TransferStatus) else self.status,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+            "verified_at": self.verified_at.isoformat() if self.verified_at else None,
+            "verified_by": self.verified_by,
             "confirmed_at": self.confirmed_at.isoformat() if self.confirmed_at else None,
             "confirmed_by": self.confirmed_by,
             "items": [item.to_dict() for item in self.items] if self.items else []

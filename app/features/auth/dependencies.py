@@ -177,3 +177,23 @@ def require_admin_or_cajero(current_user: UserInfo = Depends(get_current_user)) 
             detail="Admin or cajero access required",
         )
     return current_user
+
+
+def require_bodeguero(current_user: UserInfo = Depends(get_current_user)) -> UserInfo:
+    """Require bodeguero role only."""
+    if current_user.role != UserRole.BODEGUERO:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Bodeguero access required",
+        )
+    return current_user
+
+
+def require_admin_or_bodeguero_or_cajero(current_user: UserInfo = Depends(get_current_user)) -> UserInfo:
+    """Require admin, bodeguero, or cajero role (all roles)."""
+    if current_user.role not in [UserRole.ADMIN, UserRole.BODEGUERO, UserRole.CAJERO]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin, bodeguero, or cajero access required",
+        )
+    return current_user

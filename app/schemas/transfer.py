@@ -35,6 +35,23 @@ class TransferRequest(BaseModel):
         }
 
 
+class VerifyTransferRequest(BaseModel):
+    """Request to verify a transfer (bodeguero verifying cajero's transfer)."""
+    transfer_id: int = Field(..., description="ID of transfer to verify")
+    products: List[TransferItem] = Field(..., min_length=1, description="Verified products (can be edited)")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "transfer_id": 1,
+                "products": [
+                    {"barcode": "123456789", "quantity": 5},
+                    {"barcode": "987654321", "quantity": 3}
+                ]
+            }
+        }
+
+
 class ConfirmTransferRequest(BaseModel):
     """Request to confirm and execute a transfer."""
     products: List[TransferItem] = Field(..., min_length=1, description="Final confirmed products")
@@ -124,9 +141,12 @@ class PendingTransferResponse(BaseModel):
     id: int
     user_id: Optional[int] = None  # Nullable for Odoo admins
     username: str
+    created_by_role: Optional[str] = None  # 'admin', 'bodeguero', 'cajero'
     status: str
     created_at: datetime
     updated_at: datetime
+    verified_at: Optional[datetime] = None
+    verified_by: Optional[str] = None
     confirmed_at: Optional[datetime] = None
     confirmed_by: Optional[str] = None
     items: List[PendingTransferItemResponse] = []
@@ -138,9 +158,12 @@ class PendingTransferResponse(BaseModel):
                 "id": 1,
                 "user_id": 5,
                 "username": "bodeguero1",
+                "created_by_role": "bodeguero",
                 "status": "pending",
                 "created_at": "2025-12-03T10:30:00",
                 "updated_at": "2025-12-03T10:30:00",
+                "verified_at": None,
+                "verified_by": None,
                 "confirmed_at": None,
                 "confirmed_by": None,
                 "items": [

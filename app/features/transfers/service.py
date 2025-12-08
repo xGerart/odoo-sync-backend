@@ -617,6 +617,9 @@ class TransferService:
     ) -> PendingTransferResponse:
         """
         Save a prepared transfer to database for later confirmation.
+        Status depends on user role:
+        - CAJERO: PENDING_VERIFICATION (requires bodeguero verification)
+        - BODEGUERO/ADMIN: PENDING (goes directly to admin for confirmation)
 
         Args:
             items: List of transfer items
@@ -629,15 +632,24 @@ class TransferService:
         Raises:
             TransferError: If database save fails
         """
+        from app.core.constants import UserRole
+
         if not self.db:
             raise TransferError("Database session required for saving transfers")
 
         try:
+            # Determine status based on user role
+            if user.role == UserRole.CAJERO:
+                status = TransferStatus.PENDING_VERIFICATION
+            else:  # BODEGUERO or ADMIN
+                status = TransferStatus.PENDING
+
             # Create pending transfer
             pending_transfer = PendingTransfer(
                 user_id=user.user_id,
                 username=user.username,
-                status=TransferStatus.PENDING
+                created_by_role=user.role.value,  # Store role as string
+                status=status
             )
             self.db.add(pending_transfer)
             self.db.flush()  # Get the ID
@@ -664,27 +676,50 @@ class TransferService:
             self.db.rollback()
             raise TransferError(f"Failed to save pending transfer: {str(e)}")
 
-    def get_pending_transfers(self, status: Optional[str] = None) -> PendingTransferListResponse:
+    def get_pending_transfers(
+        self,
+        status: Optional[str] = None,
+        user: Optional[UserInfo] = None
+    ) -> PendingTransferListResponse:
         """
         Get list of pending transfers from database.
+        Filters based on user role:
+        - Admin: only transfers with status='pending' (ready to confirm)
+        - Bodeguero: only transfers with status='pending_verification' (from cajeros)
+        - Cajero: only their own transfers
 
         Args:
-            status: Optional status filter (pending, confirmed, cancelled)
+            status: Optional status filter to override role-based filtering
+            user: Optional user info for role-based filtering
 
         Returns:
             List of pending transfers
         """
         from sqlalchemy.orm import joinedload
+        from app.core.constants import UserRole
 
         if not self.db:
             raise TransferError("Database session required for fetching transfers")
 
         query = self.db.query(PendingTransfer)
 
+        # Apply status filter based on explicit parameter or user role
         if status:
+            # Explicit status filter takes precedence
             query = query.filter(PendingTransfer.status == status)
+        elif user:
+            # Apply role-based filtering
+            if user.role == UserRole.ADMIN:
+                # Admin sees only transfers ready for confirmation
+                query = query.filter(PendingTransfer.status == TransferStatus.PENDING)
+            elif user.role == UserRole.BODEGUERO:
+                # Bodeguero sees only transfers needing verification
+                query = query.filter(PendingTransfer.status == TransferStatus.PENDING_VERIFICATION)
+            elif user.role == UserRole.CAJERO:
+                # Cajero sees only their own transfers
+                query = query.filter(PendingTransfer.user_id == user.user_id)
         else:
-            # Default to only pending if no status specified
+            # Default to only pending if no user or status specified
             query = query.filter(PendingTransfer.status == TransferStatus.PENDING)
 
         # Eager load items to avoid lazy loading issues
@@ -765,6 +800,94 @@ class TransferService:
         except Exception as e:
             self.db.rollback()
             raise TransferError(f"Failed to update transfer status: {str(e)}")
+
+    def verify_transfer(
+        self,
+        transfer_id: int,
+        items: List[TransferItem],
+        verified_by: str
+    ) -> PendingTransferResponse:
+        """
+        Verify a transfer prepared by cajero (bodeguero verification step).
+        Changes status from PENDING_VERIFICATION to PENDING.
+        Allows editing quantities before passing to admin.
+
+        Args:
+            transfer_id: Transfer ID to verify
+            items: List of verified transfer items (may be edited from original)
+            verified_by: Username of bodeguero verifying
+
+        Returns:
+            Updated pending transfer
+
+        Raises:
+            TransferError: If transfer not found, wrong status, or verification fails
+        """
+        if not self.db:
+            raise TransferError("Database session required")
+
+        # Find transfer
+        transfer = self.db.query(PendingTransfer).filter(
+            PendingTransfer.id == transfer_id,
+            PendingTransfer.status == TransferStatus.PENDING_VERIFICATION
+        ).first()
+
+        if not transfer:
+            raise TransferError(
+                f"Transfer {transfer_id} not found or not in pending_verification status"
+            )
+
+        try:
+            from app.utils.timezone import get_ecuador_now
+
+            # Update items if they were edited
+            if items:
+                # Clear existing items
+                self.db.query(PendingTransferItem).filter(
+                    PendingTransferItem.transfer_id == transfer_id
+                ).delete()
+
+                # Add verified items (re-validate against Odoo)
+                for item in items:
+                    # Search product to get current data
+                    products = self.principal_client.search_read(
+                        OdooModel.PRODUCT_PRODUCT,
+                        domain=[['barcode', '=', item.barcode]],
+                        fields=['id', 'name', 'qty_available', 'standard_price', 'list_price'],
+                        limit=1
+                    )
+
+                    if not products:
+                        raise TransferError(f"Product {item.barcode} not found in Odoo")
+
+                    product = products[0]
+
+                    # Create new transfer item
+                    transfer_item = PendingTransferItem(
+                        transfer_id=transfer_id,
+                        barcode=item.barcode,
+                        product_id=product['id'],
+                        product_name=product['name'],
+                        quantity=item.quantity,
+                        available_stock=int(product.get('qty_available', 0)),
+                        unit_price=product.get('list_price', 0)
+                    )
+                    self.db.add(transfer_item)
+
+            # Update transfer status and verification fields
+            transfer.status = TransferStatus.PENDING
+            transfer.verified_at = get_ecuador_now().replace(tzinfo=None)
+            transfer.verified_by = verified_by
+            transfer.updated_at = get_ecuador_now().replace(tzinfo=None)
+
+            self.db.commit()
+            self.db.refresh(transfer)
+
+            return PendingTransferResponse.model_validate(transfer)
+
+        except Exception as e:
+            self.db.rollback()
+            raise TransferError(f"Failed to verify transfer: {str(e)}")
 
     # Private helper methods
 
