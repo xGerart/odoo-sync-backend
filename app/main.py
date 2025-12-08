@@ -63,11 +63,12 @@ async def lifespan(app: FastAPI):
         print(f"⚠️  Database initialization warning: {e}")
 
     # Run database migrations after tables are created
-    try:
-        run_migrations()
-    except Exception as e:
-        print(f"❌ Migration failed: {e}")
-        print(f"⚠️  Continuing startup, but some features may not work correctly")
+    # TODO: Re-enable after manual migration in production
+    # try:
+    #     run_migrations()
+    # except Exception as e:
+    #     print(f"❌ Migration failed: {e}")
+    #     print(f"⚠️  Continuing startup, but some features may not work correctly")
 
     # Store config in app state for error handler
     app.state.config = settings
