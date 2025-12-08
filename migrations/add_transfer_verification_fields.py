@@ -60,7 +60,7 @@ def upgrade(engine):
     """Add verification fields to pending_transfers table"""
     is_pg = is_postgres(engine)
 
-    with engine.connect() as conn:
+    with engine.begin() as conn:
         # Check if table exists first
         if not table_exists(conn, 'pending_transfers', is_pg):
             print("⚠️  Table pending_transfers does not exist yet, skipping migration")
@@ -106,13 +106,13 @@ def upgrade(engine):
         else:
             print("✓ Column verified_by already exists")
 
-        conn.commit()
+        # Commit is automatic when exiting the context manager
         print("✅ Migration add_transfer_verification_fields completed successfully!")
 
 
 def downgrade(engine):
     """Remove verification fields (optional)"""
-    with engine.connect() as conn:
+    with engine.begin() as conn:
         if is_postgres(engine):
             # PostgreSQL supports DROP COLUMN
             conn.execute(text("""
@@ -127,8 +127,6 @@ def downgrade(engine):
             print("⚠️  Note: SQLite doesn't support DROP COLUMN.")
             print("To rollback, you need to recreate the table without these columns.")
             print("This is a destructive operation and should be done manually if needed.")
-
-        conn.commit()
 
 
 # Support for running directly as a script
