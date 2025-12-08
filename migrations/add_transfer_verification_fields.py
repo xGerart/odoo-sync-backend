@@ -22,18 +22,30 @@ def is_sqlite(engine):
     return "sqlite" in str(engine.url)
 
 
-def check_column_exists(engine, table_name: str, column_name: str) -> bool:
-    """Check if a column exists in a table."""
-    inspector = inspect(engine)
-    columns = [col['name'] for col in inspector.get_columns(table_name)]
-    return column_name in columns
+def check_column_exists(conn, table_name: str, column_name: str, is_postgres: bool) -> bool:
+    """Check if a column exists in a table using the provided connection."""
+    if is_postgres:
+        # PostgreSQL: query information_schema
+        result = conn.execute(text("""
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_name = :table_name AND column_name = :column_name
+        """), {"table_name": table_name, "column_name": column_name})
+        return result.fetchone() is not None
+    else:
+        # SQLite: use PRAGMA
+        result = conn.execute(text(f"PRAGMA table_info({table_name})"))
+        columns = [row[1] for row in result.fetchall()]
+        return column_name in columns
 
 
 def upgrade(engine):
     """Add verification fields to pending_transfers table"""
+    is_pg = is_postgres(engine)
+
     with engine.connect() as conn:
         # Check and add created_by_role column
-        if not check_column_exists(engine, 'pending_transfers', 'created_by_role'):
+        if not check_column_exists(conn, 'pending_transfers', 'created_by_role', is_pg):
             print("Adding column: created_by_role")
             conn.execute(text(
                 "ALTER TABLE pending_transfers ADD COLUMN created_by_role VARCHAR(20)"
@@ -47,9 +59,9 @@ def upgrade(engine):
             print("✓ Column created_by_role already exists")
 
         # Check and add verified_at column
-        if not check_column_exists(engine, 'pending_transfers', 'verified_at'):
+        if not check_column_exists(conn, 'pending_transfers', 'verified_at', is_pg):
             print("Adding column: verified_at")
-            if is_postgres(engine):
+            if is_pg:
                 conn.execute(text(
                     "ALTER TABLE pending_transfers ADD COLUMN verified_at TIMESTAMP"
                 ))
@@ -62,7 +74,7 @@ def upgrade(engine):
             print("✓ Column verified_at already exists")
 
         # Check and add verified_by column
-        if not check_column_exists(engine, 'pending_transfers', 'verified_by'):
+        if not check_column_exists(conn, 'pending_transfers', 'verified_by', is_pg):
             print("Adding column: verified_by")
             conn.execute(text(
                 "ALTER TABLE pending_transfers ADD COLUMN verified_by VARCHAR(50)"
