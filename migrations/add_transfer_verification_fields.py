@@ -22,6 +22,23 @@ def is_sqlite(engine):
     return "sqlite" in str(engine.url)
 
 
+def table_exists(conn, table_name: str, is_postgres: bool) -> bool:
+    """Check if a table exists."""
+    if is_postgres:
+        result = conn.execute(text("""
+            SELECT EXISTS (
+                SELECT FROM information_schema.tables
+                WHERE table_name = :table_name
+            )
+        """), {"table_name": table_name})
+        return result.scalar()
+    else:
+        result = conn.execute(text(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name=:table_name"
+        ), {"table_name": table_name})
+        return result.fetchone() is not None
+
+
 def check_column_exists(conn, table_name: str, column_name: str, is_postgres: bool) -> bool:
     """Check if a column exists in a table using the provided connection."""
     if is_postgres:
@@ -44,6 +61,12 @@ def upgrade(engine):
     is_pg = is_postgres(engine)
 
     with engine.connect() as conn:
+        # Check if table exists first
+        if not table_exists(conn, 'pending_transfers', is_pg):
+            print("⚠️  Table pending_transfers does not exist yet, skipping migration")
+            print("    This migration will run automatically after the table is created")
+            return
+
         # Check and add created_by_role column
         if not check_column_exists(conn, 'pending_transfers', 'created_by_role', is_pg):
             print("Adding column: created_by_role")

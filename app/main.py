@@ -55,19 +55,19 @@ async def lifespan(app: FastAPI):
     print(f"🚀 Starting {settings.APP_NAME} v{settings.APP_VERSION}")
     print(f"📝 Environment: {settings.ENVIRONMENT}")
 
-    # Run database migrations first
-    try:
-        run_migrations()
-    except Exception as e:
-        print(f"❌ Migration failed: {e}")
-        print(f"⚠️  Continuing startup, but some features may not work correctly")
-
-    # Initialize database
+    # Initialize database first (creates tables)
     try:
         init_db()
         print("✅ Database initialized")
     except Exception as e:
         print(f"⚠️  Database initialization warning: {e}")
+
+    # Run database migrations after tables are created
+    try:
+        run_migrations()
+    except Exception as e:
+        print(f"❌ Migration failed: {e}")
+        print(f"⚠️  Continuing startup, but some features may not work correctly")
 
     # Store config in app state for error handler
     app.state.config = settings
