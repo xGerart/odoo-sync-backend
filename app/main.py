@@ -39,7 +39,7 @@ from app.features.facturas.router import router as facturas_router
 
 # Import Odoo connection
 from app.infrastructure.odoo import odoo_manager
-from app.schemas.common import HealthResponse
+from app.schemas.common import HealthResponse, OdooCredentials
 
 
 @asynccontextmanager
@@ -63,6 +63,27 @@ async def lifespan(app: FastAPI):
 
     # Store config in app state for error handler
     app.state.config = settings
+
+    # Auto-login to Principal Odoo
+    if settings.ODOO_PRINCIPAL_URL and settings.ODOO_PRINCIPAL_USERNAME and settings.ODOO_PRINCIPAL_PASSWORD:
+        try:
+            print("🔐 Auto-connecting to Principal Odoo...")
+            credentials = OdooCredentials(
+                url=settings.ODOO_PRINCIPAL_URL,
+                database=settings.ODOO_PRINCIPAL_DB,
+                port=settings.ODOO_PRINCIPAL_PORT,
+                username=settings.ODOO_PRINCIPAL_USERNAME,
+                password=settings.ODOO_PRINCIPAL_PASSWORD,
+                verify_ssl=True
+            )
+            odoo_manager.connect_principal(credentials)
+            print(f"✅ Connected to Principal Odoo: {settings.ODOO_PRINCIPAL_URL}")
+        except Exception as e:
+            print(f"⚠️  Could not auto-connect to Principal Odoo: {e}")
+            print(f"   Admin will need to login manually via /auth/login/odoo")
+    else:
+        print("⚠️  Principal Odoo credentials not configured")
+        print("   Admin will need to login manually via /auth/login/odoo")
 
     yield
 

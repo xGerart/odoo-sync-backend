@@ -53,3 +53,4 @@ test_*.py
 # Uploads and generated files
 uploads/
 pdfs/
+*.db

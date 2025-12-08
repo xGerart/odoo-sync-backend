@@ -36,6 +36,8 @@ class Settings(BaseSettings):
     ODOO_PRINCIPAL_URL: str = ""
     ODOO_PRINCIPAL_DB: str = ""
     ODOO_PRINCIPAL_PORT: int = 443
+    ODOO_PRINCIPAL_USERNAME: str = ""
+    ODOO_PRINCIPAL_PASSWORD: str = ""
 
     # Odoo Sucursal
     ODOO_SUCURSAL_URL: str = ""
