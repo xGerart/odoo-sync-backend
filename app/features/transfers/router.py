@@ -7,6 +7,7 @@ from app.core.database import get_db
 from app.infrastructure.odoo import get_odoo_manager, OdooConnectionManager
 from app.schemas.transfer import (
     TransferRequest,
+    VerifyTransferRequest,
     ConfirmTransferRequest,
     TransferResponse,
     TransferValidationResponse,
@@ -14,7 +15,13 @@ from app.schemas.transfer import (
     PendingTransferResponse
 )
 from app.schemas.auth import UserInfo
-from app.features.auth.dependencies import require_admin, require_admin_or_bodeguero, get_current_user
+from app.features.auth.dependencies import (
+    require_admin,
+    require_admin_or_bodeguero,
+    require_bodeguero,
+    require_admin_or_bodeguero_or_cajero,
+    get_current_user
+)
 from app.features.transfers.service import TransferService
 from app.models import TransferStatus
 
@@ -27,15 +34,19 @@ def prepare_transfer(
     request: TransferRequest,
     manager: OdooConnectionManager = Depends(get_odoo_manager),
     db: Session = Depends(get_db),
-    current_user: UserInfo = Depends(require_admin_or_bodeguero)
+    current_user: UserInfo = Depends(require_admin_or_bodeguero_or_cajero)
 ):
     """
     Prepare a transfer (Step 1).
 
-    **Requires:** Admin or Bodeguero role
+    **Requires:** Admin, Bodeguero, or Cajero role
 
     Validates stock availability, generates transfer data, and SAVES to database.
     **Does NOT reduce inventory** - that happens on confirmation.
+
+    **Flow:**
+    - Cajero: Transfer goes to PENDING_VERIFICATION (requires bodeguero verification)
+    - Bodeguero/Admin: Transfer goes to PENDING (directly to admin for confirmation)
 
     - **products**: List of products with barcodes and quantities
 
@@ -94,15 +105,15 @@ def prepare_transfer(
 def get_pending_transfers(
     manager: OdooConnectionManager = Depends(get_odoo_manager),
     db: Session = Depends(get_db),
-    current_user: UserInfo = Depends(require_admin)
+    current_user: UserInfo = Depends(get_current_user)
 ):
     """
-    Get list of pending transfers awaiting confirmation.
+    Get list of pending transfers based on user role.
 
-    **Requires:** Admin role ONLY
-
-    Returns all transfers with status 'pending' that were prepared by bodegueros
-    and are waiting for admin confirmation.
+    **Role-based filtering:**
+    - **Admin**: Only transfers with status='pending' (ready for confirmation)
+    - **Bodeguero**: Only transfers with status='pending_verification' (from cajeros needing verification)
+    - **Cajero**: Only their own transfers (any status)
 
     Returns:
     - List of pending transfers with all items
@@ -115,9 +126,9 @@ def get_pending_transfers(
         principal_client = manager.get_principal_client()
         service = TransferService(principal_client, db=db)
 
-        result = service.get_pending_transfers(status="pending")
+        result = service.get_pending_transfers(user=current_user)
 
-        logger.info(f"Retrieved {result.total} pending transfers")
+        logger.info(f"Retrieved {result.total} pending transfers for {current_user.role.value}")
 
         return result
 
@@ -126,6 +137,58 @@ def get_pending_transfers(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to retrieve pending transfers: {str(e)}"
+        )
+
+
+@router.post("/verify", response_model=PendingTransferResponse)
+def verify_transfer(
+    request: VerifyTransferRequest,
+    manager: OdooConnectionManager = Depends(get_odoo_manager),
+    db: Session = Depends(get_db),
+    current_user: UserInfo = Depends(require_bodeguero)
+):
+    """
+    Verify a transfer prepared by cajero (verification step).
+
+    **Requires:** Bodeguero role ONLY
+
+    Changes transfer status from PENDING_VERIFICATION to PENDING.
+    Allows editing quantities before passing to admin for final confirmation.
+
+    - **transfer_id**: ID of transfer to verify
+    - **products**: Verified products (can be edited from original)
+
+    Returns:
+    - Updated transfer with status='pending'
+    - Transfer ready for admin confirmation
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+
+    logger.info(f"=== VERIFY TRANSFER ===")
+    logger.info(f"Transfer ID: {request.transfer_id}")
+    logger.info(f"Verified by: {current_user.username}")
+    logger.info(f"Products count: {len(request.products)}")
+
+    try:
+        principal_client = manager.get_principal_client()
+        service = TransferService(principal_client, db=db)
+
+        result = service.verify_transfer(
+            transfer_id=request.transfer_id,
+            items=request.products,
+            verified_by=current_user.username
+        )
+
+        logger.info(f"Transfer {request.transfer_id} verified successfully")
+
+        return result
+
+    except Exception as e:
+        logger.error(f"Error verifying transfer: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to verify transfer: {str(e)}"
         )
 
 
@@ -281,11 +344,30 @@ def confirm_transfer(
                     confirmed_by=current_user.username
                 )
                 logger.info(f"Transfer {transfer_id} marked as confirmed by {current_user.username}")
-                result.message += f" (Transfer ID: {transfer_id} confirmed)"
+                # Create new response with updated message (Pydantic objects are immutable)
+                result = TransferResponse(
+                    success=result.success,
+                    message=result.message + f" (Transfer ID: {transfer_id} confirmed)",
+                    xml_content=result.xml_content,
+                    pdf_content=result.pdf_content,
+                    pdf_filename=result.pdf_filename,
+                    processed_count=result.processed_count,
+                    inventory_reduced=result.inventory_reduced,
+                    products=result.products
+                )
             except Exception as update_error:
                 logger.warning(f"Failed to update transfer status: {str(update_error)}")
                 # Don't fail the entire request if status update fails
-                result.message += " (Warning: Status not updated in database)"
+                result = TransferResponse(
+                    success=result.success,
+                    message=result.message + " (Warning: Status not updated in database)",
+                    xml_content=result.xml_content,
+                    pdf_content=result.pdf_content,
+                    pdf_filename=result.pdf_filename,
+                    processed_count=result.processed_count,
+                    inventory_reduced=result.inventory_reduced,
+                    products=result.products
+                )
 
         return result
 
