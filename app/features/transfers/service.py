@@ -126,15 +126,27 @@ class TransferService:
             for p in processed_products
         ]
 
-        message = f"Transfer prepared: {len(processed_products)} products. "
+        # If there are ANY errors, reject the entire transfer
         if errors:
-            message += f"{len(errors)} errors. "
-            # Add first 3 error details to help user understand what failed
             error_details = "; ".join(errors[:3])
             if len(errors) > 3:
                 error_details += f"... and {len(errors) - 3} more"
-            message += f"Errors: {error_details}. "
-        message += "INVENTORY NOT REDUCED - requires confirmation."
+
+            message = (
+                f"❌ Transfer REJECTED - {len(errors)} product(s) failed validation. "
+                f"Fix these errors and try again:\n\n{error_details}\n\n"
+                f"✅ {len(processed_products)} product(s) passed validation but were NOT saved."
+            )
+
+            return TransferResponse(
+                success=False,
+                message=message,
+                processed_count=0,
+                inventory_reduced=False
+            ), []
+
+        # All products validated successfully
+        message = f"✅ Transfer validated successfully: {len(processed_products)} products ready. INVENTORY NOT REDUCED - requires admin confirmation."
 
         response = TransferResponse(
             success=True,
