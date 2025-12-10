@@ -695,7 +695,7 @@ class TransferService:
         Returns:
             List of pending transfers
         """
-        from sqlalchemy.orm import joinedload
+        from sqlalchemy.orm import selectinload
         from app.core.constants import UserRole
 
         if not self.db:
@@ -723,7 +723,7 @@ class TransferService:
             query = query.filter(PendingTransfer.status == TransferStatus.PENDING)
 
         # Eager load items to avoid lazy loading issues
-        transfers = query.options(joinedload(PendingTransfer.items)).order_by(PendingTransfer.created_at.desc()).all()
+        transfers = query.options(selectinload(PendingTransfer.items)).order_by(PendingTransfer.created_at.desc()).all()
 
         return PendingTransferListResponse(
             transfers=[PendingTransferResponse.model_validate(t) for t in transfers],
