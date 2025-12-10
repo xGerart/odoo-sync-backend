@@ -129,6 +129,11 @@ class TransferService:
         message = f"Transfer prepared: {len(processed_products)} products. "
         if errors:
             message += f"{len(errors)} errors. "
+            # Add first 3 error details to help user understand what failed
+            error_details = "; ".join(errors[:3])
+            if len(errors) > 3:
+                error_details += f"... and {len(errors) - 3} more"
+            message += f"Errors: {error_details}. "
         message += "INVENTORY NOT REDUCED - requires confirmation."
 
         response = TransferResponse(
