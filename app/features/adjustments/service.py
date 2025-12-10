@@ -98,21 +98,30 @@ class AdjustmentService:
                 logger.error(f"Error validating item {item.barcode}: {str(e)}")
                 errors.append(f"Error validating {item.barcode}: {str(e)}")
 
-        if not validated_items:
+        # If there are ANY errors, reject the entire adjustment
+        if errors:
+            error_details = "; ".join(errors[:3])
+            if len(errors) > 3:
+                error_details += f"... and {len(errors) - 3} more"
+
+            message = (
+                f"❌ Adjustment REJECTED - {len(errors)} product(s) failed validation. "
+                f"Fix these errors and try again:\n\n{error_details}\n\n"
+                f"✅ {len(validated_items)} product(s) passed validation but were NOT saved."
+            )
+
             return AdjustmentResponse(
                 success=False,
-                message=f"No valid items to process. Errors: {'; '.join(errors)}",
+                message=message,
                 processed_count=0,
                 inventory_updated=False
             )
 
-        # Save to database
+        # All products validated successfully - save to database
         try:
             pending_adjustment = self.save_pending_adjustment(validated_items, user)
 
-            message = f"Adjustment prepared successfully: {len(validated_items)} items. Awaiting admin confirmation."
-            if errors:
-                message += f" {len(errors)} items had errors."
+            message = f"✅ Adjustment validated successfully: {len(validated_items)} items ready. Awaiting admin confirmation."
 
             return AdjustmentResponse(
                 success=True,
