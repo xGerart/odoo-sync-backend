@@ -238,6 +238,7 @@ class TransferHistoryItemResponse(BaseModel):
 class TransferHistoryResponse(BaseModel):
     """Response schema for transfer history."""
     id: int
+    status: str  # "PENDING", "PENDING_VERIFICATION", "COMPLETED"
     pending_transfer_id: Optional[int] = None
     origin_location: str
     destination_location_id: str

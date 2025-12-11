@@ -410,44 +410,110 @@ def get_transfer_history(
 
     **Requires:** Admin role ONLY
 
-    Returns complete history of all executed transfers with details of
-    successful and failed items, stock snapshots, and generated PDFs.
+    Returns ALL transfers (pending and completed) from all users.
+    Combines pending_transfers and transfer_history.
 
     Query parameters:
     - **skip**: Number of records to skip (pagination)
     - **limit**: Maximum number of records to return
     - **destination_location_id**: Filter by destination location
-    - **executed_by**: Filter by user who executed the transfer
+    - **executed_by**: Filter by user who executed/prepared the transfer
 
     Returns:
-    - List of transfer history records with all execution details
+    - List of ALL transfer records (pending + completed)
     - Total count
     """
     import logging
     from app.models.transfer_history import TransferHistory
+    from app.models.pending_transfer import PendingTransfer
+    from app.schemas.transfer import TransferHistoryItemResponse
 
     logger = logging.getLogger(__name__)
 
     try:
-        query = db.query(TransferHistory)
+        all_records = []
 
-        # Apply filters
+        # 1. Get completed transfers (from transfer_history)
+        completed_query = db.query(TransferHistory)
+
+        # Apply filters for completed transfers
         if destination_location_id:
-            query = query.filter(TransferHistory.destination_location_id == destination_location_id)
-
+            completed_query = completed_query.filter(TransferHistory.destination_location_id == destination_location_id)
         if executed_by:
-            query = query.filter(TransferHistory.executed_by == executed_by)
+            completed_query = completed_query.filter(TransferHistory.executed_by == executed_by)
 
-        # Get total count
-        total = query.count()
+        completed_transfers = completed_query.all()
 
-        # Order by most recent first and apply pagination
-        history_records = query.order_by(TransferHistory.executed_at.desc()).offset(skip).limit(limit).all()
+        for record in completed_transfers:
+            history_dict = {
+                "id": record.id,
+                "status": "COMPLETED",
+                "pending_transfer_id": record.pending_transfer_id,
+                "origin_location": record.origin_location,
+                "destination_location_id": record.destination_location_id,
+                "destination_location_name": record.destination_location_name,
+                "executed_by": record.executed_by,
+                "executed_at": record.executed_at,
+                "total_items": record.total_items,
+                "successful_items": record.successful_items,
+                "failed_items": record.failed_items,
+                "total_quantity_requested": record.total_quantity_requested,
+                "total_quantity_transferred": record.total_quantity_transferred,
+                "has_errors": record.has_errors,
+                "error_summary": record.error_summary,
+                "pdf_filename": record.pdf_filename,
+                "items": [TransferHistoryItemResponse.from_orm(item) for item in record.items]
+            }
+            all_records.append((record.executed_at, TransferHistoryResponse(**history_dict)))
 
-        logger.info(f"Retrieved {len(history_records)} transfer history records (total: {total})")
+        # 2. Get pending transfers (from pending_transfers)
+        pending_query = db.query(PendingTransfer).filter(
+            PendingTransfer.status.in_(['PENDING', 'PENDING_VERIFICATION'])
+        )
+
+        # Apply filters for pending transfers
+        if destination_location_id:
+            pending_query = pending_query.filter(PendingTransfer.destination_location_id == destination_location_id)
+        if executed_by:
+            pending_query = pending_query.filter(PendingTransfer.username == executed_by)
+
+        pending_transfers = pending_query.all()
+
+        for pending in pending_transfers:
+            # Convert pending_transfer to history format
+            total_quantity = sum(item.quantity for item in pending.items)
+            history_dict = {
+                "id": pending.id,
+                "status": pending.status,  # "PENDING" or "PENDING_VERIFICATION"
+                "pending_transfer_id": pending.id,
+                "origin_location": "principal",
+                "destination_location_id": pending.destination_location_id or "unknown",
+                "destination_location_name": pending.destination_location_name or "Sin destino",
+                "executed_by": pending.username,
+                "executed_at": pending.created_at,  # Use created_at for pending
+                "total_items": len(pending.items),
+                "successful_items": 0,  # Not yet executed
+                "failed_items": 0,
+                "total_quantity_requested": total_quantity,
+                "total_quantity_transferred": 0,  # Not yet transferred
+                "has_errors": False,
+                "error_summary": None,
+                "pdf_filename": None,
+                "items": []
+            }
+            all_records.append((pending.created_at, TransferHistoryResponse(**history_dict)))
+
+        # 3. Sort all records by date (most recent first)
+        all_records.sort(key=lambda x: x[0], reverse=True)
+
+        # 4. Apply pagination
+        total = len(all_records)
+        paginated_records = [record[1] for record in all_records[skip:skip + limit]]
+
+        logger.info(f"Retrieved {len(paginated_records)} transfer history records for admin (total: {total})")
 
         return TransferHistoryListResponse(
-            history=[TransferHistoryResponse.from_orm(record) for record in history_records],
+            history=paginated_records,
             total=total
         )
 
@@ -469,42 +535,100 @@ def get_my_transfer_history(
     """
     Get transfer history for current user (Bodeguero/Cajero/Admin).
 
-    Returns history of transfers prepared by the current user.
-    Filters based on pending_transfer ownership.
+    Returns ALL transfers (pending and completed) prepared by the current user.
+    Combines pending_transfers and transfer_history.
 
     Query parameters:
     - **skip**: Number of records to skip (pagination)
     - **limit**: Maximum number of records to return
 
     Returns:
-    - List of transfer history records for user's transfers
+    - List of ALL transfer records for user (pending + completed)
     - Total count
     """
     import logging
     from app.models.transfer_history import TransferHistory
     from app.models.pending_transfer import PendingTransfer
+    from app.schemas.transfer import TransferHistoryItemResponse
 
     logger = logging.getLogger(__name__)
 
     try:
-        # Join with pending_transfers to filter by username
-        query = db.query(TransferHistory).join(
+        all_records = []
+
+        # 1. Get completed transfers (from transfer_history)
+        completed_query = db.query(TransferHistory).join(
             PendingTransfer,
             TransferHistory.pending_transfer_id == PendingTransfer.id
         ).filter(
             PendingTransfer.username == current_user.username
         )
+        completed_transfers = completed_query.all()
 
-        # Get total count
-        total = query.count()
+        for record in completed_transfers:
+            history_dict = {
+                "id": record.id,
+                "status": "COMPLETED",
+                "pending_transfer_id": record.pending_transfer_id,
+                "origin_location": record.origin_location,
+                "destination_location_id": record.destination_location_id,
+                "destination_location_name": record.destination_location_name,
+                "executed_by": record.executed_by,
+                "executed_at": record.executed_at,
+                "total_items": record.total_items,
+                "successful_items": record.successful_items,
+                "failed_items": record.failed_items,
+                "total_quantity_requested": record.total_quantity_requested,
+                "total_quantity_transferred": record.total_quantity_transferred,
+                "has_errors": record.has_errors,
+                "error_summary": record.error_summary,
+                "pdf_filename": record.pdf_filename,
+                "items": [TransferHistoryItemResponse.from_orm(item) for item in record.items]
+            }
+            all_records.append((record.executed_at, TransferHistoryResponse(**history_dict)))
 
-        # Order by most recent first and apply pagination
-        history_records = query.order_by(TransferHistory.executed_at.desc()).offset(skip).limit(limit).all()
+        # 2. Get pending transfers (from pending_transfers)
+        pending_query = db.query(PendingTransfer).filter(
+            PendingTransfer.username == current_user.username,
+            PendingTransfer.status.in_(['PENDING', 'PENDING_VERIFICATION'])
+        )
+        pending_transfers = pending_query.all()
 
-        logger.info(f"Retrieved {len(history_records)} transfer history records for user {current_user.username} (total: {total})")
+        for pending in pending_transfers:
+            # Convert pending_transfer to history format
+            total_quantity = sum(item.quantity for item in pending.items)
+            history_dict = {
+                "id": pending.id,
+                "status": pending.status,  # "PENDING" or "PENDING_VERIFICATION"
+                "pending_transfer_id": pending.id,
+                "origin_location": "principal",
+                "destination_location_id": pending.destination_location_id or "unknown",
+                "destination_location_name": pending.destination_location_name or "Sin destino",
+                "executed_by": pending.username,
+                "executed_at": pending.created_at,  # Use created_at for pending
+                "total_items": len(pending.items),
+                "successful_items": 0,  # Not yet executed
+                "failed_items": 0,
+                "total_quantity_requested": total_quantity,
+                "total_quantity_transferred": 0,  # Not yet transferred
+                "has_errors": False,
+                "error_summary": None,
+                "pdf_filename": None,
+                "items": []
+            }
+            all_records.append((pending.created_at, TransferHistoryResponse(**history_dict)))
+
+        # 3. Sort all records by date (most recent first)
+        all_records.sort(key=lambda x: x[0], reverse=True)
+
+        # 4. Apply pagination
+        total = len(all_records)
+        paginated_records = [record[1] for record in all_records[skip:skip + limit]]
+
+        logger.info(f"Retrieved {len(paginated_records)} transfer history records for user {current_user.username} (total: {total})")
 
         return TransferHistoryListResponse(
-            history=[TransferHistoryResponse.from_orm(record) for record in history_records],
+            history=paginated_records,
             total=total
         )
 
