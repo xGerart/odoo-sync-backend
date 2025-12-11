@@ -124,7 +124,10 @@ class ProductService:
 
             if products:
                 product = products[0]
-                logger.info(f"[SERVICE] Product data: {product}")
+                # Log product data without image to avoid cluttering logs
+                product_log = {k: v for k, v in product.items() if k != 'image_1920'}
+                product_log['image_1920'] = '...' if product.get('image_1920') else None
+                logger.info(f"[SERVICE] Product data: {product_log}")
 
                 # Calculate display price with IVA
                 logger.info(f"[SERVICE] Calculating display price from list_price: {product['list_price']}")
