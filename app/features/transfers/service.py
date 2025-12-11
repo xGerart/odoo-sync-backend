@@ -740,9 +740,11 @@ class TransferService:
             Exception: If database operations fail
         """
         import json
+        import logging
         from app.models.transfer_history import TransferHistory, TransferHistoryItem
         from app.utils.timezone import get_ecuador_now
 
+        logger = logging.getLogger(__name__)
         logger.info(f"Creating transfer history record for destination: {destination_location_name}")
 
         # Combine all products for counting
