@@ -12,7 +12,9 @@ from app.schemas.transfer import (
     TransferResponse,
     TransferValidationResponse,
     PendingTransferListResponse,
-    PendingTransferResponse
+    PendingTransferResponse,
+    TransferHistoryResponse,
+    TransferHistoryListResponse
 )
 from app.schemas.auth import UserInfo
 from app.features.auth.dependencies import (
@@ -70,15 +72,25 @@ def prepare_transfer(
         service = TransferService(principal_client, db=db)
 
         # First, validate and prepare the transfer (returns product details)
-        result, processed_products = service.prepare_transfer_with_details(request.products)
+        result, processed_products = service.prepare_transfer_with_details(request.products, request.destination_location_id)
 
         if result.success and processed_products:
             # Save to database for admin confirmation
             try:
+                # Get destination name if location_id provided
+                destination_name = None
+                if request.destination_location_id:
+                    from app.core.locations import LocationService
+                    location_service = LocationService()
+                    destination = location_service.get_location_by_id(request.destination_location_id)
+                    destination_name = destination.name if destination else None
+
                 pending_transfer = service.save_pending_transfer(
                     items=request.products,
                     user=current_user,
-                    product_details=processed_products
+                    product_details=processed_products,
+                    destination_location_id=request.destination_location_id,
+                    destination_location_name=destination_name
                 )
                 logger.info(f"Transfer saved to database with ID: {pending_transfer.id}")
                 result.message += f" Transfer ID: {pending_transfer.id}"
@@ -332,7 +344,8 @@ def confirm_transfer(
         result = service.confirm_transfer(
             items=request.products,
             transfer_id=transfer_id,
-            username=current_user.username
+            username=current_user.username,
+            destination_location_id=request.destination_location_id
         )
 
         # If successful and transfer_id provided, update status in database
@@ -378,4 +391,268 @@ def confirm_transfer(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Transfer confirmation failed: {str(e)}"
+        )
+
+
+# Transfer History Endpoints
+
+@router.get("/history", response_model=TransferHistoryListResponse)
+def get_transfer_history(
+    skip: int = 0,
+    limit: int = 50,
+    destination_location_id: str = None,
+    executed_by: str = None,
+    db: Session = Depends(get_db),
+    current_user: UserInfo = Depends(require_admin)
+):
+    """
+    Get transfer execution history (Admin only).
+
+    **Requires:** Admin role ONLY
+
+    Returns complete history of all executed transfers with details of
+    successful and failed items, stock snapshots, and generated PDFs.
+
+    Query parameters:
+    - **skip**: Number of records to skip (pagination)
+    - **limit**: Maximum number of records to return
+    - **destination_location_id**: Filter by destination location
+    - **executed_by**: Filter by user who executed the transfer
+
+    Returns:
+    - List of transfer history records with all execution details
+    - Total count
+    """
+    import logging
+    from app.models.transfer_history import TransferHistory
+
+    logger = logging.getLogger(__name__)
+
+    try:
+        query = db.query(TransferHistory)
+
+        # Apply filters
+        if destination_location_id:
+            query = query.filter(TransferHistory.destination_location_id == destination_location_id)
+
+        if executed_by:
+            query = query.filter(TransferHistory.executed_by == executed_by)
+
+        # Get total count
+        total = query.count()
+
+        # Order by most recent first and apply pagination
+        history_records = query.order_by(TransferHistory.executed_at.desc()).offset(skip).limit(limit).all()
+
+        logger.info(f"Retrieved {len(history_records)} transfer history records (total: {total})")
+
+        return TransferHistoryListResponse(
+            history=[TransferHistoryResponse.from_orm(record) for record in history_records],
+            total=total
+        )
+
+    except Exception as e:
+        logger.error(f"Error retrieving transfer history: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to retrieve transfer history: {str(e)}"
+        )
+
+
+@router.get("/history/me", response_model=TransferHistoryListResponse)
+def get_my_transfer_history(
+    skip: int = 0,
+    limit: int = 50,
+    db: Session = Depends(get_db),
+    current_user: UserInfo = Depends(get_current_user)
+):
+    """
+    Get transfer history for current user (Bodeguero/Cajero/Admin).
+
+    Returns history of transfers prepared by the current user.
+    Filters based on pending_transfer ownership.
+
+    Query parameters:
+    - **skip**: Number of records to skip (pagination)
+    - **limit**: Maximum number of records to return
+
+    Returns:
+    - List of transfer history records for user's transfers
+    - Total count
+    """
+    import logging
+    from app.models.transfer_history import TransferHistory
+    from app.models.pending_transfer import PendingTransfer
+
+    logger = logging.getLogger(__name__)
+
+    try:
+        # Join with pending_transfers to filter by username
+        query = db.query(TransferHistory).join(
+            PendingTransfer,
+            TransferHistory.pending_transfer_id == PendingTransfer.id
+        ).filter(
+            PendingTransfer.username == current_user.username
+        )
+
+        # Get total count
+        total = query.count()
+
+        # Order by most recent first and apply pagination
+        history_records = query.order_by(TransferHistory.executed_at.desc()).offset(skip).limit(limit).all()
+
+        logger.info(f"Retrieved {len(history_records)} transfer history records for user {current_user.username} (total: {total})")
+
+        return TransferHistoryListResponse(
+            history=[TransferHistoryResponse.from_orm(record) for record in history_records],
+            total=total
+        )
+
+    except Exception as e:
+        logger.error(f"Error retrieving user transfer history: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to retrieve transfer history: {str(e)}"
+        )
+
+
+@router.get("/history/{history_id}", response_model=TransferHistoryResponse)
+def get_transfer_history_detail(
+    history_id: int,
+    db: Session = Depends(get_db),
+    current_user: UserInfo = Depends(get_current_user)
+):
+    """
+    Get detailed transfer history record.
+
+    Returns complete details of a single transfer execution including
+    all items, stock snapshots, and errors.
+
+    **Access control:**
+    - Admin: Can view any transfer
+    - Bodeguero/Cajero: Can only view their own transfers
+
+    Returns:
+    - Complete transfer history record with all items
+    """
+    import logging
+    from app.models.transfer_history import TransferHistory
+    from app.models.pending_transfer import PendingTransfer
+
+    logger = logging.getLogger(__name__)
+
+    try:
+        history = db.query(TransferHistory).filter_by(id=history_id).first()
+
+        if not history:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Transfer history record {history_id} not found"
+            )
+
+        # Validate permissions: Admin can see all, others only their own
+        if current_user.role.value != 'admin':
+            if history.pending_transfer_id:
+                pending = db.query(PendingTransfer).filter_by(id=history.pending_transfer_id).first()
+                if not pending or pending.username != current_user.username:
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail="Not authorized to view this transfer"
+                    )
+            else:
+                # History without pending_transfer (direct admin transfers) - only admin can see
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Not authorized to view this transfer"
+                )
+
+        logger.info(f"Retrieved transfer history detail for ID {history_id}")
+
+        return TransferHistoryResponse.from_orm(history)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error retrieving transfer history detail: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to retrieve transfer history: {str(e)}"
+        )
+
+
+@router.get("/history/{history_id}/pdf")
+def download_transfer_pdf(
+    history_id: int,
+    db: Session = Depends(get_db),
+    current_user: UserInfo = Depends(get_current_user)
+):
+    """
+    Download PDF report for a transfer history record.
+
+    Returns the PDF file for download.
+
+    **Access control:**
+    - Admin: Can download any PDF
+    - Bodeguero/Cajero: Can only download PDFs for their own transfers
+    """
+    import logging
+    import base64
+    from fastapi.responses import Response
+    from app.models.transfer_history import TransferHistory
+    from app.models.pending_transfer import PendingTransfer
+
+    logger = logging.getLogger(__name__)
+
+    try:
+        history = db.query(TransferHistory).filter_by(id=history_id).first()
+
+        if not history:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Transfer history record {history_id} not found"
+            )
+
+        # Validate permissions (same as detail endpoint)
+        if current_user.role.value != 'admin':
+            if history.pending_transfer_id:
+                pending = db.query(PendingTransfer).filter_by(id=history.pending_transfer_id).first()
+                if not pending or pending.username != current_user.username:
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail="Not authorized to download this PDF"
+                    )
+            else:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Not authorized to download this PDF"
+                )
+
+        if not history.pdf_content:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="PDF not available for this transfer"
+            )
+
+        # Decode base64 PDF content
+        pdf_bytes = base64.b64decode(history.pdf_content)
+
+        filename = history.pdf_filename or f"transfer_{history_id}.pdf"
+
+        logger.info(f"Downloading PDF for transfer history {history_id}: {filename}")
+
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": f"attachment; filename={filename}"
+            }
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error downloading transfer PDF: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to download PDF: {str(e)}"
         )

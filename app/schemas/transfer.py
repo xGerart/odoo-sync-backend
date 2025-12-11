@@ -23,6 +23,7 @@ class TransferItem(BaseModel):
 class TransferRequest(BaseModel):
     """Request to prepare a transfer."""
     products: List[TransferItem] = Field(..., min_length=1, description="Products to transfer")
+    destination_location_id: Optional[str] = Field(None, description="Destination location ID (e.g., 'sucursal', 'sucursal_sacha')")
 
     class Config:
         json_schema_extra = {
@@ -30,7 +31,8 @@ class TransferRequest(BaseModel):
                 "products": [
                     {"barcode": "123456789", "quantity": 5},
                     {"barcode": "987654321", "quantity": 3}
-                ]
+                ],
+                "destination_location_id": "sucursal"
             }
         }
 
@@ -55,6 +57,7 @@ class VerifyTransferRequest(BaseModel):
 class ConfirmTransferRequest(BaseModel):
     """Request to confirm and execute a transfer."""
     products: List[TransferItem] = Field(..., min_length=1, description="Final confirmed products")
+    destination_location_id: Optional[str] = Field(None, description="Destination location ID (admin can override)")
 
     class Config:
         json_schema_extra = {
@@ -62,7 +65,8 @@ class ConfirmTransferRequest(BaseModel):
                 "products": [
                     {"barcode": "123456789", "quantity": 5},
                     {"barcode": "987654321", "quantity": 3}
-                ]
+                ],
+                "destination_location_id": "sucursal_sacha"
             }
         }
 
@@ -149,6 +153,8 @@ class PendingTransferResponse(BaseModel):
     verified_by: Optional[str] = None
     confirmed_at: Optional[datetime] = None
     confirmed_by: Optional[str] = None
+    destination_location_id: Optional[str] = None
+    destination_location_name: Optional[str] = None
     items: List[PendingTransferItemResponse] = []
 
     class Config:
@@ -166,6 +172,8 @@ class PendingTransferResponse(BaseModel):
                 "verified_by": None,
                 "confirmed_at": None,
                 "confirmed_by": None,
+                "destination_location_id": "sucursal",
+                "destination_location_name": "Sucursal Principal",
                 "items": [
                     {
                         "id": 1,
@@ -199,5 +207,86 @@ class PendingTransferListResponse(BaseModel):
                     }
                 ],
                 "total": 1
+            }
+        }
+
+
+# Transfer History Schemas
+
+class TransferHistoryItemResponse(BaseModel):
+    """Response schema for a transfer history item."""
+    id: int
+    barcode: str
+    product_id: int
+    product_name: str
+    quantity_requested: int
+    quantity_transferred: int
+    success: bool
+    error_message: Optional[str] = None
+    stock_origin_before: Optional[int] = None
+    stock_origin_after: Optional[int] = None
+    stock_destination_before: Optional[int] = None
+    stock_destination_after: Optional[int] = None
+    unit_price: Optional[float] = None
+    total_value: Optional[float] = None
+    is_new_product: bool = False
+
+    class Config:
+        from_attributes = True
+
+
+class TransferHistoryResponse(BaseModel):
+    """Response schema for transfer history."""
+    id: int
+    pending_transfer_id: Optional[int] = None
+    origin_location: str
+    destination_location_id: str
+    destination_location_name: str
+    executed_by: str
+    executed_at: datetime
+    total_items: int
+    successful_items: int
+    failed_items: int
+    total_quantity_requested: int
+    total_quantity_transferred: int
+    has_errors: bool
+    error_summary: Optional[str] = None
+    pdf_filename: Optional[str] = None
+    items: List[TransferHistoryItemResponse] = []
+
+    class Config:
+        from_attributes = True
+        json_schema_extra = {
+            "example": {
+                "id": 1,
+                "pending_transfer_id": 5,
+                "origin_location": "principal",
+                "destination_location_id": "sucursal",
+                "destination_location_name": "Sucursal Principal",
+                "executed_by": "admin",
+                "executed_at": "2025-12-10T15:30:00",
+                "total_items": 3,
+                "successful_items": 2,
+                "failed_items": 1,
+                "total_quantity_requested": 15,
+                "total_quantity_transferred": 10,
+                "has_errors": True,
+                "error_summary": "Product X: Insufficient stock",
+                "pdf_filename": "transfer_report_20251210_153000.pdf",
+                "items": []
+            }
+        }
+
+
+class TransferHistoryListResponse(BaseModel):
+    """Response schema for list of transfer history."""
+    history: List[TransferHistoryResponse]
+    total: int
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "history": [],
+                "total": 0
             }
         }

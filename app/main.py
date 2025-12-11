@@ -41,6 +41,8 @@ from app.features.facturas.router import router as facturas_router
 # Import Odoo connection
 from app.infrastructure.odoo import odoo_manager
 from app.schemas.common import HealthResponse, OdooCredentials
+from app.core.locations import LocationService, OdooLocation
+from typing import List
 
 
 @asynccontextmanager
@@ -197,6 +199,17 @@ async def health_check():
         odoo_principal_status="connected" if connection_status['principal']['connected'] else "disconnected",
         odoo_sucursal_status="connected" if connection_status['branch']['connected'] else "disconnected"
     )
+
+
+@app.get("/api/locations", response_model=List[OdooLocation], tags=["Locations"])
+async def get_locations():
+    """
+    Get available Odoo locations for transfers.
+
+    Returns list of configured Odoo locations that can be used as transfer destinations.
+    """
+    locations = LocationService.get_available_locations()
+    return locations
 
 
 @app.post("/api/odoo/connect/principal", tags=["Odoo Connection"])

@@ -48,6 +48,10 @@ class PendingTransfer(Base):
     confirmed_at = Column(DateTime, nullable=True)
     confirmed_by = Column(String(50), nullable=True)  # Admin username who confirmed
 
+    # Destination tracking
+    destination_location_id = Column(String(50), nullable=True)  # e.g., 'sucursal', 'sucursal_sacha'
+    destination_location_name = Column(String(100), nullable=True)  # Human-readable name
+
     # Relationship to items
     items = relationship("PendingTransferItem", back_populates="transfer", cascade="all, delete-orphan")
 
@@ -68,6 +72,8 @@ class PendingTransfer(Base):
             "verified_by": self.verified_by,
             "confirmed_at": self.confirmed_at.isoformat() if self.confirmed_at else None,
             "confirmed_by": self.confirmed_by,
+            "destination_location_id": self.destination_location_id,
+            "destination_location_name": self.destination_location_name,
             "items": [item.to_dict() for item in self.items] if self.items else []
         }
 

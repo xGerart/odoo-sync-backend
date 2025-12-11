@@ -159,19 +159,28 @@ class TransferService:
 
         return response, processed_products
 
-    def prepare_transfer(self, items: List[TransferItem]) -> TransferResponse:
+    def prepare_transfer(self, items: List[TransferItem], destination_location_id: Optional[str] = None) -> TransferResponse:
         """
         Prepare transfer - validate stock but DO NOT reduce inventory.
 
         Args:
             items: List of transfer items
+            destination_location_id: Optional destination location ID (e.g., 'sucursal', 'sucursal_sacha')
 
         Returns:
             Transfer response with validation results
 
         Raises:
-            TransferError: If validation fails
+            TransferError: If validation fails or destination is invalid
         """
+        # Validate destination if provided
+        if destination_location_id:
+            from app.core.locations import LocationService
+            location_service = LocationService()
+            destination = location_service.get_location_by_id(destination_location_id)
+
+            if not destination:
+                raise TransferError(f"Invalid destination location: {destination_location_id}")
         processed_products = []
         errors = []
 
@@ -268,11 +277,13 @@ class TransferService:
         self,
         items: List[TransferItem],
         transfer_id: Optional[int] = None,
-        username: str = "admin"
+        username: str = "admin",
+        destination_location_id: Optional[str] = None
     ) -> TransferResponse:
         """
         Confirm transfer - ACTUALLY reduce inventory in principal and add to branch.
         Now also captures before/after data and generates PDF report.
+        Creates historical record in transfer_history table.
 
         Requires both principal and branch clients to be authenticated.
 
@@ -280,12 +291,14 @@ class TransferService:
             items: List of transfer items
             transfer_id: Optional transfer ID for report
             username: Username confirming the transfer
+            destination_location_id: Optional destination location ID (admin can override)
 
         Returns:
-            Transfer response with execution results and PDF report
+            Transfer response with execution results and PDF report.
+            Returns success=True if at least 1 product was transferred successfully.
 
         Raises:
-            TransferError: If branch client not provided or transfer fails
+            TransferError: If branch client not provided or destination is invalid
         """
         import logging
         from datetime import datetime
@@ -300,6 +313,33 @@ class TransferService:
 
         if not self.branch_client:
             raise TransferError("Branch client required for transfer confirmation")
+
+        # Determine destination location
+        # Priority: parameter > pending_transfer > raise error
+        destination_name = "Sucursal"  # Default name
+
+        if transfer_id and not destination_location_id:
+            # Try to get destination from pending_transfer
+            if self.db:
+                pending = self.db.query(PendingTransfer).filter_by(id=transfer_id).first()
+                if pending and pending.destination_location_id:
+                    destination_location_id = pending.destination_location_id
+                    destination_name = pending.destination_location_name or "Sucursal"
+                    logger.info(f"Using destination from pending transfer: {destination_location_id} ({destination_name})")
+
+        if not destination_location_id:
+            raise TransferError("Destination location must be specified")
+
+        # Validate destination location
+        from app.core.locations import LocationService
+        location_service = LocationService()
+        destination = location_service.get_location_by_id(destination_location_id)
+
+        if not destination:
+            raise TransferError(f"Invalid destination location: {destination_location_id}")
+
+        destination_name = destination.name
+        logger.info(f"Confirmed destination: {destination_location_id} ({destination_name})")
 
         # Data for PDF report
         origin_before = []
@@ -516,7 +556,7 @@ class TransferService:
                 'date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                 'username': username,
                 'confirmed_by': username,
-                'destination': 'Sucursal',
+                'destination': destination_name,
                 'total_items': len(processed_products),
                 'total_quantity': sum(p['quantity'] for p in processed_products)
             }
@@ -534,19 +574,50 @@ class TransferService:
             logger.error(f"Error generating PDF report: {str(e)}")
             # Continue even if PDF generation fails
 
-        message = f"Transfer CONFIRMED! {len(processed_products)} products. "
-        message += "Inventory reduced in principal and added to branch."
-        if errors:
-            message += f" {len(errors)} errors occurred."
+        # Determine overall success - at least 1 product must be transferred
+        has_successful_transfers = len(processed_products) > 0
+
+        # Build message
+        if has_successful_transfers and not errors:
+            message = f"✅ Transfer completed successfully: {len(processed_products)} products transferred to {destination_name}."
+        elif has_successful_transfers and errors:
+            message = f"✅ Transfer completed with PARTIAL success: {len(processed_products)}/{len(items)} products transferred to {destination_name}. {len(errors)} failed."
+        else:
+            message = f"❌ Transfer FAILED: All {len(items)} products failed. No inventory was transferred."
+
+        # Create historical record if database session available
+        if self.db and has_successful_transfers:
+            try:
+                self._create_transfer_history(
+                    pending_transfer_id=transfer_id,
+                    destination_location_id=destination_location_id,
+                    destination_location_name=destination_name,
+                    executed_by=username,
+                    successful_products=processed_products,
+                    failed_products=[],  # Will add error handling below
+                    origin_before=origin_before,
+                    origin_after=origin_after,
+                    destination_before=destination_before,
+                    destination_after=destination_after,
+                    new_products=new_products,
+                    pdf_content=pdf_content,
+                    pdf_filename=pdf_filename,
+                    xml_content=xml_content,
+                    errors=errors
+                )
+                logger.info("✓ Transfer history record created")
+            except Exception as e:
+                logger.error(f"Failed to create transfer history: {str(e)}")
+                # Don't fail the transfer if history creation fails
 
         return TransferResponse(
-            success=True,
+            success=has_successful_transfers,
             message=message,
             xml_content=xml_content,
             pdf_content=pdf_content,
             pdf_filename=pdf_filename,
             processed_count=len(processed_products),
-            inventory_reduced=True
+            inventory_reduced=has_successful_transfers
         )
 
     def validate_transfer(self, items: List[TransferItem]) -> TransferValidationResponse:
@@ -624,13 +695,140 @@ class TransferService:
             warnings=warnings
         )
 
+    def _create_transfer_history(
+        self,
+        pending_transfer_id: Optional[int],
+        destination_location_id: str,
+        destination_location_name: str,
+        executed_by: str,
+        successful_products: List[Dict],
+        failed_products: List[Dict],
+        origin_before: List[Dict],
+        origin_after: List[Dict],
+        destination_before: List[Dict],
+        destination_after: List[Dict],
+        new_products: List[Dict],
+        pdf_content: Optional[str],
+        pdf_filename: Optional[str],
+        xml_content: Optional[str],
+        errors: List[str]
+    ) -> 'TransferHistory':
+        """
+        Create comprehensive historical record of transfer execution.
+
+        Args:
+            pending_transfer_id: Optional ID of the pending transfer
+            destination_location_id: Destination location ID
+            destination_location_name: Destination location name
+            executed_by: Username who executed the transfer
+            successful_products: List of successfully transferred products
+            failed_products: List of products that failed to transfer
+            origin_before: Stock snapshots before transfer at origin
+            origin_after: Stock snapshots after transfer at origin
+            destination_before: Stock snapshots before transfer at destination
+            destination_after: Stock snapshots after transfer at destination
+            new_products: List of new products created at destination
+            pdf_content: Base64 encoded PDF content
+            pdf_filename: PDF filename
+            xml_content: XML content
+            errors: List of error messages
+
+        Returns:
+            Created TransferHistory record
+
+        Raises:
+            Exception: If database operations fail
+        """
+        import json
+        from app.models.transfer_history import TransferHistory, TransferHistoryItem
+        from app.utils.timezone import get_ecuador_now
+
+        logger.info(f"Creating transfer history record for destination: {destination_location_name}")
+
+        # Combine all products for counting
+        all_products = successful_products + failed_products
+
+        # Calculate totals
+        total_items = len(all_products)
+        successful_items = len(successful_products)
+        failed_items = len(failed_products)
+        total_quantity_requested = sum(p.get('quantity_requested', 0) for p in all_products)
+        total_quantity_transferred = sum(p.get('quantity_transferred', 0) for p in successful_products)
+
+        # Build error summary
+        error_summary = None
+        if errors:
+            error_summary = "; ".join(errors)
+
+        # Create main history record
+        history = TransferHistory(
+            pending_transfer_id=pending_transfer_id,
+            origin_location='principal',
+            destination_location_id=destination_location_id,
+            destination_location_name=destination_location_name,
+            executed_by=executed_by,
+            executed_at=get_ecuador_now().replace(tzinfo=None),  # SQLite needs naive datetime
+            total_items=total_items,
+            successful_items=successful_items,
+            failed_items=failed_items,
+            total_quantity_requested=total_quantity_requested,
+            total_quantity_transferred=total_quantity_transferred,
+            pdf_content=pdf_content,
+            pdf_filename=pdf_filename,
+            xml_content=xml_content,
+            origin_snapshots_before=json.dumps(origin_before),
+            origin_snapshots_after=json.dumps(origin_after),
+            destination_snapshots_before=json.dumps(destination_before),
+            destination_snapshots_after=json.dumps(destination_after),
+            new_products=json.dumps(new_products),
+            has_errors=len(errors) > 0,
+            error_summary=error_summary
+        )
+
+        self.db.add(history)
+        self.db.flush()  # Get ID for items
+
+        logger.info(f"Transfer history record created with ID: {history.id}")
+
+        # Create individual item records
+        for product in all_products:
+            is_successful = product in successful_products
+
+            item = TransferHistoryItem(
+                history_id=history.id,
+                barcode=product.get('barcode', ''),
+                product_id=product.get('product_id', 0),
+                product_name=product.get('product_name', ''),
+                quantity_requested=product.get('quantity_requested', 0),
+                quantity_transferred=product.get('quantity_transferred', 0) if is_successful else 0,
+                success=is_successful,
+                error_message=product.get('error') if not is_successful else None,
+                stock_origin_before=product.get('stock_before'),
+                stock_origin_after=product.get('stock_after'),
+                stock_destination_before=product.get('dest_stock_before'),
+                stock_destination_after=product.get('dest_stock_after'),
+                unit_price=product.get('unit_price'),
+                total_value=product.get('quantity_transferred', 0) * product.get('unit_price', 0) if is_successful else 0,
+                is_new_product=product.get('barcode', '') in [p.get('barcode', '') for p in new_products]
+            )
+            self.db.add(item)
+
+        # Commit all changes
+        self.db.commit()
+
+        logger.info(f"✓ Transfer history saved: {successful_items} successful, {failed_items} failed")
+
+        return history
+
     # Persistence methods for pending transfers
 
     def save_pending_transfer(
         self,
         items: List[TransferItem],
         user: UserInfo,
-        product_details: List[Dict]
+        product_details: List[Dict],
+        destination_location_id: Optional[str] = None,
+        destination_location_name: Optional[str] = None
     ) -> PendingTransferResponse:
         """
         Save a prepared transfer to database for later confirmation.
@@ -642,6 +840,8 @@ class TransferService:
             items: List of transfer items
             user: User who prepared the transfer
             product_details: Detailed product information from validation
+            destination_location_id: Optional destination location ID
+            destination_location_name: Optional destination location name
 
         Returns:
             Created pending transfer
@@ -666,7 +866,9 @@ class TransferService:
                 user_id=user.user_id,
                 username=user.username,
                 created_by_role=user.role.value,  # Store role as string
-                status=status
+                status=status,
+                destination_location_id=destination_location_id,
+                destination_location_name=destination_location_name
             )
             self.db.add(pending_transfer)
             self.db.flush()  # Get the ID
