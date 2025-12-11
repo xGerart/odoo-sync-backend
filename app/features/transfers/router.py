@@ -72,7 +72,7 @@ def prepare_transfer(
         service = TransferService(principal_client, db=db)
 
         # First, validate and prepare the transfer (returns product details)
-        result, processed_products = service.prepare_transfer_with_details(request.products, request.destination_location_id)
+        result, processed_products = service.prepare_transfer_with_details(request.products)
 
         if result.success and processed_products:
             # Save to database for admin confirmation
