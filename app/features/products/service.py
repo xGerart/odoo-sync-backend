@@ -107,12 +107,12 @@ class ProductService:
             raise ValidationError("Invalid barcode format", field="barcode")
 
         try:
-            # Search in product.product first
+            # Search in product.product first (case-insensitive)
             logger.info(f"[SERVICE] Searching in Odoo for barcode: {barcode}")
             products = self.client.search_read(
                 OdooModel.PRODUCT_PRODUCT,
                 domain=[
-                    ['barcode', '=', barcode],
+                    ['barcode', '=ilike', barcode],  # Case-insensitive search
                     ['active', '=', True],
                     ['available_in_pos', '=', True]
                 ],

@@ -25,8 +25,9 @@ def validate_barcode(barcode: str) -> bool:
     if not barcode or len(barcode) < 5 or len(barcode) > 20:
         return False
 
-    # Must be alphanumeric (letters, numbers, hyphens)
-    return bool(re.match(r'^[A-Za-z0-9\-_]+$', barcode))
+    # Must be alphanumeric (letters, numbers, hyphens, underscores, apostrophes)
+    # Apostrophes are allowed to support barcodes like "marla2312'77"
+    return bool(re.match(r"^[A-Za-z0-9\-_']+$", barcode))
 
 
 def validate_xml_file(filename: str) -> tuple[bool, Optional[str]]:
