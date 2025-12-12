@@ -557,11 +557,9 @@ def get_my_transfer_history(
         all_records = []
 
         # 1. Get completed transfers (from transfer_history)
-        completed_query = db.query(TransferHistory).join(
-            PendingTransfer,
-            TransferHistory.pending_transfer_id == PendingTransfer.id
-        ).filter(
-            PendingTransfer.username == current_user.username
+        # Filter directly by executed_by instead of joining with pending_transfers
+        completed_query = db.query(TransferHistory).filter(
+            TransferHistory.executed_by == current_user.username
         )
         completed_transfers = completed_query.all()
 
