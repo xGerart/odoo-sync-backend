@@ -425,7 +425,7 @@ def get_transfer_history(
     """
     import logging
     from app.models.transfer_history import TransferHistory
-    from app.models.pending_transfer import PendingTransfer
+    from app.models.pending_transfer import PendingTransfer, TransferStatus
     from app.schemas.transfer import TransferHistoryItemResponse
 
     logger = logging.getLogger(__name__)
@@ -468,7 +468,7 @@ def get_transfer_history(
 
         # 2. Get pending transfers (from pending_transfers)
         pending_query = db.query(PendingTransfer).filter(
-            PendingTransfer.status.in_(['PENDING', 'PENDING_VERIFICATION'])
+            PendingTransfer.status.in_([TransferStatus.PENDING, TransferStatus.PENDING_VERIFICATION])
         )
 
         # Apply filters for pending transfers
@@ -548,7 +548,7 @@ def get_my_transfer_history(
     """
     import logging
     from app.models.transfer_history import TransferHistory
-    from app.models.pending_transfer import PendingTransfer
+    from app.models.pending_transfer import PendingTransfer, TransferStatus
     from app.schemas.transfer import TransferHistoryItemResponse
 
     logger = logging.getLogger(__name__)
@@ -588,7 +588,7 @@ def get_my_transfer_history(
         # 2. Get pending transfers (from pending_transfers)
         pending_query = db.query(PendingTransfer).filter(
             PendingTransfer.username == current_user.username,
-            PendingTransfer.status.in_(['PENDING', 'PENDING_VERIFICATION'])
+            PendingTransfer.status.in_([TransferStatus.PENDING, TransferStatus.PENDING_VERIFICATION])
         )
         pending_transfers = pending_query.all()
 
