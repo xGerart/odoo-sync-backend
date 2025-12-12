@@ -462,7 +462,7 @@ def get_transfer_history(
                 "has_errors": record.has_errors,
                 "error_summary": record.error_summary,
                 "pdf_filename": record.pdf_filename,
-                "items": [TransferHistoryItemResponse.from_orm(item) for item in record.items]
+                "items": [TransferHistoryItemResponse.model_validate(item) for item in record.items]
             }
             all_records.append((record.executed_at, TransferHistoryResponse(**history_dict)))
 
@@ -581,7 +581,7 @@ def get_my_transfer_history(
                 "has_errors": record.has_errors,
                 "error_summary": record.error_summary,
                 "pdf_filename": record.pdf_filename,
-                "items": [TransferHistoryItemResponse.from_orm(item) for item in record.items]
+                "items": [TransferHistoryItemResponse.model_validate(item) for item in record.items]
             }
             all_records.append((record.executed_at, TransferHistoryResponse(**history_dict)))
 
@@ -690,7 +690,7 @@ def get_transfer_history_detail(
 
         logger.info(f"Retrieved transfer history detail for ID {history_id}")
 
-        return TransferHistoryResponse.from_orm(history)
+        return TransferHistoryResponse.model_validate(history)
 
     except HTTPException:
         raise
