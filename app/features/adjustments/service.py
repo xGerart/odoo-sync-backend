@@ -243,6 +243,11 @@ class AdjustmentService:
         processed_count = 0
         errors = []
 
+        # Data for history capture
+        snapshots_before = []
+        snapshots_after = []
+        successful_products = []
+
         for item in items:
             try:
                 # Get current product info
@@ -262,6 +267,16 @@ class AdjustmentService:
 
                 logger.info(f"Updating product {product['name']} (ID: {product['id']})")
                 logger.info(f"Current stock: {current_stock}, Adjustment type: {item.adjustment_type.value}, Quantity: {item.quantity}")
+
+                # CAPTURE: Snapshot BEFORE adjustment
+                snapshot_before = self._capture_product_snapshot(
+                    self.principal_client,
+                    item.barcode,
+                    product['id']
+                )
+                if snapshot_before:
+                    snapshots_before.append(snapshot_before)
+                    logger.info(f"  ✓ Snapshot BEFORE captured")
 
                 # Determine mode based on adjustment type
                 # ADJUSTMENT (physical count) = replace the value
@@ -288,6 +303,29 @@ class AdjustmentService:
                     logger.error(f"Error updating stock: {str(stock_error)}")
                     errors.append(f"Failed to update stock for {item.barcode}")
                     continue
+
+                # CAPTURE: Snapshot AFTER adjustment
+                snapshot_after = self._capture_product_snapshot(
+                    self.principal_client,
+                    item.barcode,
+                    product['id']
+                )
+                if snapshot_after:
+                    snapshots_after.append(snapshot_after)
+                    logger.info(f"  ✓ Snapshot AFTER captured")
+
+                # Track successful product with all data
+                successful_products.append({
+                    'barcode': item.barcode,
+                    'product_id': item.product_id,
+                    'product_name': item.product_name,
+                    'quantity': item.quantity,
+                    'adjustment_type': item.adjustment_type.value,
+                    'reason': item.reason.value,
+                    'unit_price': item.unit_price,
+                    'stock_before': snapshot_before.get('qty_available') if snapshot_before else None,
+                    'stock_after': snapshot_after.get('qty_available') if snapshot_after else None
+                })
 
                 # Update product name and photo if provided (only for ADJUSTMENT type)
                 if item.adjustment_type.value == 'adjustment':
@@ -435,6 +473,71 @@ class AdjustmentService:
                 logger.error(f"Error updating pending adjustment status: {str(e)}")
                 # Don't fail the entire operation if just the status update fails
 
+        # Generate PDF and XML, and create historical record
+        if processed_count > 0 and successful_products:
+            try:
+                from datetime import datetime
+
+                # Generate XML content
+                xml_content = self._generate_adjustment_xml(successful_products)
+                logger.info("✓ XML content generated")
+
+                # Prepare adjustment data for PDF
+                adjustment_data = {
+                    'id': adjustment_id or 'new',
+                    'date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                    'username': user.username,
+                    'confirmed_by': user.username,
+                    'location_name': 'Principal',
+                    'adjustment_type': items[0].adjustment_type.value if items else '',
+                    'reason': items[0].reason.value if items else '',
+                    'total_items': len(successful_products),
+                    'total_quantity': sum(abs(p['quantity']) for p in successful_products)
+                }
+
+                # Generate PDF report
+                pdf_content = None
+                pdf_filename = None
+                try:
+                    pdf_content, pdf_filename = self._generate_adjustment_report_pdf(
+                        adjustment_data=adjustment_data,
+                        snapshots_before=snapshots_before,
+                        snapshots_after=snapshots_after
+                    )
+                    logger.info(f"✓ PDF report generated: {pdf_filename}")
+                except Exception as pdf_error:
+                    logger.error(f"Error generating PDF report: {str(pdf_error)}")
+                    # Continue even if PDF generation fails
+
+                # Create historical record
+                try:
+                    self._create_adjustment_history(
+                        pending_adjustment_id=adjustment_id,
+                        location='principal',
+                        location_name='Principal',
+                        executed_by=user.username,
+                        successful_products=successful_products,
+                        failed_products=[],  # We could track failed products here if needed
+                        snapshots_before=snapshots_before,
+                        snapshots_after=snapshots_after,
+                        pdf_content=pdf_content,
+                        pdf_filename=pdf_filename,
+                        xml_content=xml_content,
+                        errors=errors
+                    )
+                    logger.info("✓ Adjustment history record created")
+                except Exception as history_error:
+                    logger.error(f"Failed to create adjustment history: {str(history_error)}")
+                    import traceback
+                    logger.error(traceback.format_exc())
+                    # Don't fail the adjustment if history creation fails
+
+            except Exception as e:
+                logger.error(f"Error in history/PDF generation: {str(e)}")
+                import traceback
+                logger.error(traceback.format_exc())
+                # Don't fail the adjustment if history creation fails
+
         # Build response
         if processed_count == 0:
             return AdjustmentResponse(
@@ -544,3 +647,241 @@ class AdjustmentService:
             history=history,
             total=len(history)
         )
+
+    # Helper methods for adjustment history
+
+    def _capture_product_snapshot(
+        self,
+        client: 'OdooClient',
+        barcode: str,
+        product_id: Optional[int] = None
+    ) -> Optional[Dict]:
+        """
+        Capture complete product snapshot (stock, prices).
+
+        Args:
+            client: Odoo client (principal or branch)
+            barcode: Product barcode
+            product_id: Optional product ID (faster if known)
+
+        Returns:
+            Dict with product data or None if not found
+        """
+        try:
+            if product_id:
+                products = client.read(
+                    OdooModel.PRODUCT_PRODUCT,
+                    [product_id],
+                    fields=['id', 'name', 'barcode', 'qty_available',
+                            'standard_price', 'list_price']
+                )
+            else:
+                products = client.search_read(
+                    OdooModel.PRODUCT_PRODUCT,
+                    domain=[['barcode', '=', barcode]],
+                    fields=['id', 'name', 'barcode', 'qty_available',
+                            'standard_price', 'list_price'],
+                    limit=1
+                )
+
+            if not products:
+                return None
+
+            product = products[0]
+            return {
+                'id': product.get('id'),
+                'name': product.get('name'),
+                'barcode': product.get('barcode'),
+                'qty_available': product.get('qty_available', 0),
+                'standard_price': product.get('standard_price', 0),
+                'list_price': product.get('list_price', 0)
+            }
+
+        except Exception as e:
+            logger.error(f"Error capturing product snapshot for {barcode}: {e}")
+            return None
+
+    def _generate_adjustment_xml(self, products: List[Dict]) -> str:
+        """
+        Generate XML content for adjustment.
+
+        Args:
+            products: List of products with adjustment data
+
+        Returns:
+            XML string
+        """
+        xml_lines = ['<?xml version="1.0" encoding="UTF-8"?>']
+        xml_lines.append('<adjustment>')
+
+        for product in products:
+            xml_lines.append('  <product>')
+            xml_lines.append(f'    <name>{product.get("product_name", "")}</name>')
+            xml_lines.append(f'    <barcode>{product.get("barcode", "")}</barcode>')
+            xml_lines.append(f'    <quantity>{product.get("quantity", 0)}</quantity>')
+            xml_lines.append(f'    <adjustment_type>{product.get("adjustment_type", "")}</adjustment_type>')
+            xml_lines.append(f'    <reason>{product.get("reason", "")}</reason>')
+            xml_lines.append(f'    <unit_price>{product.get("unit_price", 0)}</unit_price>')
+            xml_lines.append('  </product>')
+
+        xml_lines.append('</adjustment>')
+        return '\n'.join(xml_lines)
+
+    def _generate_adjustment_report_pdf(
+        self,
+        adjustment_data: Dict[str, Any],
+        snapshots_before: List[Dict],
+        snapshots_after: List[Dict]
+    ) -> tuple[str, str]:
+        """
+        Generate PDF report for adjustment.
+
+        Args:
+            adjustment_data: Adjustment metadata (id, date, user, type, reason, etc.)
+            snapshots_before: Stock before adjustment
+            snapshots_after: Stock after adjustment
+
+        Returns:
+            Tuple of (base64_pdf_content, pdf_filename)
+        """
+        import base64
+        from datetime import datetime
+        from app.utils.pdf_templates import AdjustmentReport
+
+        try:
+            # Generate PDF
+            report = AdjustmentReport()
+            pdf_buffer = report.generate(
+                adjustment_data=adjustment_data,
+                snapshots_before=snapshots_before,
+                snapshots_after=snapshots_after
+            )
+
+            # Convert to base64
+            pdf_content = base64.b64encode(pdf_buffer.getvalue()).decode('utf-8')
+
+            # Generate filename
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            adjustment_id = adjustment_data.get('id', 'new')
+            pdf_filename = f"adjustment_report_{adjustment_id}_{timestamp}.pdf"
+
+            logger.info(f"Generated PDF report: {pdf_filename}")
+            return pdf_content, pdf_filename
+
+        except Exception as e:
+            logger.error(f"Error generating PDF report: {str(e)}")
+            raise
+
+    def _create_adjustment_history(
+        self,
+        pending_adjustment_id: Optional[int],
+        location: str,
+        location_name: str,
+        executed_by: str,
+        successful_products: List[Dict],
+        failed_products: List[Dict],
+        snapshots_before: List[Dict],
+        snapshots_after: List[Dict],
+        pdf_content: Optional[str],
+        pdf_filename: Optional[str],
+        xml_content: Optional[str],
+        errors: List[str]
+    ) -> 'AdjustmentHistory':
+        """
+        Create comprehensive historical record of adjustment execution.
+
+        Args:
+            pending_adjustment_id: Optional ID of the pending adjustment
+            location: Location ID where adjustment was made
+            location_name: Location name
+            executed_by: Username who executed the adjustment
+            successful_products: List of successfully adjusted products
+            failed_products: List of products that failed to adjust
+            snapshots_before: Stock snapshots before adjustment
+            snapshots_after: Stock snapshots after adjustment
+            pdf_content: Base64 encoded PDF content
+            pdf_filename: PDF filename
+            xml_content: XML content
+            errors: List of error messages
+
+        Returns:
+            Created AdjustmentHistory record
+
+        Raises:
+            Exception: If database operations fail
+        """
+        import json
+        from app.models.adjustment_history import AdjustmentHistory, AdjustmentHistoryItem
+        from app.utils.timezone import get_ecuador_now
+
+        logger.info(f"Creating adjustment history record for location: {location_name}")
+
+        # Combine all products for counting
+        all_products = successful_products + failed_products
+
+        # Calculate totals
+        total_items = len(all_products)
+        successful_items = len(successful_products)
+        failed_items = len(failed_products)
+        total_quantity_requested = sum(abs(p.get('quantity', 0)) for p in all_products)
+        total_quantity_adjusted = sum(abs(p.get('quantity', 0)) for p in successful_products)
+
+        # Build error summary
+        error_summary = None
+        if errors:
+            error_summary = "; ".join(errors)
+
+        # Create main history record
+        history = AdjustmentHistory(
+            pending_adjustment_id=pending_adjustment_id,
+            location=location,
+            location_name=location_name,
+            executed_by=executed_by,
+            executed_at=get_ecuador_now().replace(tzinfo=None),  # SQLite needs naive datetime
+            total_items=total_items,
+            successful_items=successful_items,
+            failed_items=failed_items,
+            total_quantity_requested=total_quantity_requested,
+            total_quantity_adjusted=total_quantity_adjusted,
+            pdf_content=pdf_content,
+            pdf_filename=pdf_filename,
+            xml_content=xml_content,
+            snapshots_before=json.dumps(snapshots_before),
+            snapshots_after=json.dumps(snapshots_after),
+            has_errors=len(errors) > 0,
+            error_summary=error_summary
+        )
+
+        self.db.add(history)
+        self.db.flush()  # Get ID for items
+
+        logger.info(f"Adjustment history record created with ID: {history.id}")
+
+        # Create individual item records
+        for product in all_products:
+            is_successful = product in successful_products
+
+            item = AdjustmentHistoryItem(
+                history_id=history.id,
+                barcode=product.get('barcode', ''),
+                product_id=product.get('product_id', 0),
+                product_name=product.get('product_name', ''),
+                quantity_requested=abs(product.get('quantity', 0)),
+                quantity_adjusted=abs(product.get('quantity', 0)) if is_successful else 0,
+                adjustment_type=product.get('adjustment_type', ''),
+                reason=product.get('reason', ''),
+                success=is_successful,
+                error_message=product.get('error') if not is_successful else None,
+                stock_before=product.get('stock_before'),
+                stock_after=product.get('stock_after'),
+                unit_price=product.get('unit_price'),
+                total_value=abs(product.get('quantity', 0)) * product.get('unit_price', 0) if is_successful else 0
+            )
+            self.db.add(item)
+
+        # Commit all changes
+        self.db.commit()
+
+        logger.info(f"✓ Adjustment history saved: {successful_items} successful, {failed_items} failed")
+
+        return history

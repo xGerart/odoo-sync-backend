@@ -466,9 +466,13 @@ def get_transfer_history(
             }
             all_records.append((record.executed_at, TransferHistoryResponse(**history_dict)))
 
-        # 2. Get pending transfers (from pending_transfers)
+        # 2. Get pending and cancelled transfers (from pending_transfers)
         pending_query = db.query(PendingTransfer).filter(
-            PendingTransfer.status.in_([TransferStatus.PENDING, TransferStatus.PENDING_VERIFICATION])
+            PendingTransfer.status.in_([
+                TransferStatus.PENDING,
+                TransferStatus.PENDING_VERIFICATION,
+                TransferStatus.CANCELLED
+            ])
         )
 
         # Apply filters for pending transfers
@@ -585,10 +589,14 @@ def get_my_transfer_history(
             }
             all_records.append((record.executed_at, TransferHistoryResponse(**history_dict)))
 
-        # 2. Get pending transfers (from pending_transfers)
+        # 2. Get pending and cancelled transfers (from pending_transfers)
         pending_query = db.query(PendingTransfer).filter(
             PendingTransfer.username == current_user.username,
-            PendingTransfer.status.in_([TransferStatus.PENDING, TransferStatus.PENDING_VERIFICATION])
+            PendingTransfer.status.in_([
+                TransferStatus.PENDING,
+                TransferStatus.PENDING_VERIFICATION,
+                TransferStatus.CANCELLED
+            ])
         )
         pending_transfers = pending_query.all()
 

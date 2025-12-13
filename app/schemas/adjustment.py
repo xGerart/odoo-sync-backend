@@ -1,10 +1,11 @@
 """
 Adjustment-related schemas.
 """
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from datetime import datetime
 from pydantic import BaseModel, Field
 from enum import Enum
+import json
 
 
 class AdjustmentTypeEnum(str, Enum):
@@ -271,5 +272,150 @@ class AdjustmentHistoryResponse(BaseModel):
                     }
                 ],
                 "total": 1
+            }
+        }
+
+
+# Complete Adjustment History Schemas (with snapshots and PDF)
+
+class AdjustmentHistoryItemDetailResponse(BaseModel):
+    """Detailed response schema for adjustment history item."""
+    id: int
+    barcode: str
+    product_id: int
+    product_name: str
+    quantity_requested: int
+    quantity_adjusted: int
+    adjustment_type: str
+    reason: Optional[str] = None
+    success: bool
+    error_message: Optional[str] = None
+    stock_before: Optional[int] = None
+    stock_after: Optional[int] = None
+    unit_price: Optional[float] = None
+    total_value: Optional[float] = None
+
+    class Config:
+        from_attributes = True
+
+
+class AdjustmentHistoryDetailResponse(BaseModel):
+    """Complete adjustment history record with all details."""
+    id: int
+    pending_adjustment_id: Optional[int] = None
+    location: str
+    location_name: Optional[str] = None
+    executed_by: str
+    executed_at: datetime
+    total_items: int
+    successful_items: int
+    failed_items: int
+    total_quantity_requested: int
+    total_quantity_adjusted: int
+    pdf_filename: Optional[str] = None
+    has_errors: bool
+    error_summary: Optional[str] = None
+    items: List[AdjustmentHistoryItemDetailResponse] = []
+    snapshots_before: List[Dict[str, Any]] = []
+    snapshots_after: List[Dict[str, Any]] = []
+
+    class Config:
+        from_attributes = True
+
+    @classmethod
+    def model_validate(cls, obj: Any, **kwargs):
+        """Custom validation to parse JSON fields."""
+        if isinstance(obj, dict):
+            # Already a dict, use default validation
+            return super().model_validate(obj, **kwargs)
+
+        # Parse from ORM object
+        data = {
+            'id': obj.id,
+            'pending_adjustment_id': obj.pending_adjustment_id,
+            'location': obj.location,
+            'location_name': obj.location_name,
+            'executed_by': obj.executed_by,
+            'executed_at': obj.executed_at,
+            'total_items': obj.total_items,
+            'successful_items': obj.successful_items,
+            'failed_items': obj.failed_items,
+            'total_quantity_requested': obj.total_quantity_requested,
+            'total_quantity_adjusted': obj.total_quantity_adjusted,
+            'pdf_filename': obj.pdf_filename,
+            'has_errors': obj.has_errors,
+            'error_summary': obj.error_summary,
+            'items': [AdjustmentHistoryItemDetailResponse.model_validate(item) for item in obj.items],
+            'snapshots_before': json.loads(obj.snapshots_before) if obj.snapshots_before else [],
+            'snapshots_after': json.loads(obj.snapshots_after) if obj.snapshots_after else []
+        }
+        return cls(**data)
+
+
+class AdjustmentHistoryListResponse(BaseModel):
+    """Response schema for list of complete adjustment histories."""
+    history: List[AdjustmentHistoryDetailResponse]
+    total: int
+
+
+# ============================================================
+# Unified History Schemas (combines pending + history)
+# ============================================================
+
+class UnifiedAdjustmentRecord(BaseModel):
+    """Unified record combining pending and history adjustments."""
+    id: str = Field(..., description="Composite ID: 'pending_{id}' or 'history_{id}'")
+    original_id: int = Field(..., description="Original record ID from database")
+    source: str = Field(..., description="Source table: 'pending' or 'history'")
+    status: str = Field(..., description="Status: 'pending', 'confirmed', or 'rejected'")
+    adjustment_type: str = Field(..., description="Adjustment type")
+    username: str = Field(..., description="User who created/executed the adjustment")
+    created_at: datetime = Field(..., description="Creation date")
+    updated_at: datetime = Field(..., description="Last update date")
+    confirmed_at: Optional[datetime] = Field(None, description="Confirmation date")
+    confirmed_by: Optional[str] = Field(None, description="Admin who confirmed")
+    total_items: int = Field(..., description="Total number of items")
+    successful_items: Optional[int] = Field(None, description="Successful items (history only)")
+    failed_items: Optional[int] = Field(None, description="Failed items (history only)")
+    items: List[Dict[str, Any]] = Field(..., description="List of adjustment items")
+    has_pdf: bool = Field(..., description="Whether PDF report is available")
+    pdf_filename: Optional[str] = Field(None, description="PDF filename")
+    has_errors: Optional[bool] = Field(None, description="Whether execution had errors (history only)")
+
+    class Config:
+        from_attributes = True
+        json_schema_extra = {
+            "example": {
+                "id": "pending_123",
+                "original_id": 123,
+                "source": "pending",
+                "status": "pending",
+                "adjustment_type": "entry",
+                "username": "bodeguero1",
+                "created_at": "2025-01-15T10:30:00",
+                "updated_at": "2025-01-15T10:30:00",
+                "confirmed_at": None,
+                "confirmed_by": None,
+                "total_items": 5,
+                "successful_items": None,
+                "failed_items": None,
+                "items": [],
+                "has_pdf": False,
+                "pdf_filename": None,
+                "has_errors": None
+            }
+        }
+
+
+class UnifiedAdjustmentHistoryResponse(BaseModel):
+    """Response for unified adjustment history (pending + confirmed + rejected)."""
+    records: List[UnifiedAdjustmentRecord] = Field(..., description="List of unified adjustment records")
+    total: int = Field(..., description="Total number of records")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "records": [],
+                "total": 0
             }
         }
