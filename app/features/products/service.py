@@ -227,23 +227,69 @@ class ProductService:
             if product_info and product_info[0].get('product_tmpl_id'):
                 template_id = product_info[0]['product_tmpl_id'][0]
 
-                # Update the template to be storable
+                # Update the template to be storable (handles Odoo version differences)
                 try:
-                    self.client.write(
+                    import logging
+                    logger = logging.getLogger(__name__)
+
+                    # Get ALL available fields on product.template to check for is_storable
+                    fields_info = self.client.fields_get(
                         OdooModel.PRODUCT_TEMPLATE,
-                        [template_id],
-                        {'detailed_type': 'product'}  # Storable product
+                        fields=[]  # Empty list = get all fields
                     )
-                except Exception:
-                    # Try old field name
-                    try:
+
+                    update_fields = {}
+
+                    # Check which fields are available and their valid values
+                    # In Odoo 18+, type='consu' + is_storable=True for storable products
+                    # In Odoo 16-17, detailed_type='product' for storable
+                    # In older Odoo, type='product' for storable
+
+                    if 'detailed_type' in fields_info:
+                        # Odoo 16-17: use detailed_type
+                        update_fields['detailed_type'] = 'product'
+                        logger.info("Setting detailed_type='product' (Odoo 16-17)")
+
+                    if 'type' in fields_info:
+                        type_selection = fields_info['type'].get('selection', [])
+                        valid_values = [v[0] for v in type_selection] if type_selection else []
+                        logger.info(f"Available type values: {valid_values}")
+
+                        if 'product' in valid_values:
+                            # Older Odoo versions
+                            update_fields['type'] = 'product'
+                            logger.info("Setting type='product' (Odoo <16)")
+                        elif 'consu' in valid_values:
+                            # Odoo 18+: 'consu' is used for storable products
+                            update_fields['type'] = 'consu'
+                            logger.info("Setting type='consu' (Odoo 18+)")
+
+                            # CRITICAL: Check if is_storable field exists (Odoo 18+)
+                            if 'is_storable' in fields_info:
+                                update_fields['is_storable'] = True
+                                logger.info("✓ Setting is_storable=True to enable inventory tracking")
+                            else:
+                                logger.warning("Field 'is_storable' not found in product.template")
+                        else:
+                            logger.warning(f"No valid storable type found. Available: {valid_values}")
+
+                    # Update the template with all available fields
+                    if update_fields:
                         self.client.write(
                             OdooModel.PRODUCT_TEMPLATE,
                             [template_id],
-                            {'type': 'product'}  # Storable product
+                            update_fields
                         )
-                    except Exception:
-                        pass  # Continue anyway
+                        logger.info(f"✓ Product template {template_id} updated to storable: {update_fields}")
+                    else:
+                        logger.error("✗ Could not set product as storable - no valid fields")
+
+                except Exception as type_error:
+                    import logging
+                    logger = logging.getLogger(__name__)
+                    logger.error(f"Error setting product type to storable: {type_error}")
+                    import traceback
+                    logger.error(traceback.format_exc())
 
             # Update stock if quantity specified
             if product.qty_available > 0:
@@ -463,14 +509,84 @@ class ProductService:
                     'purchase_ok': True,  # Can be purchased
                 }
 
-                # Use auto-detection for product type field (handles Odoo version differences)
-                product_data.update(self.client._get_product_type_field())
+                # Note: Product type (storable) will be set after creation via product.template update
+                # This handles Odoo version differences (detailed_type in 18+, type in older versions)
 
                 logger.info(f"Product data to create: {product_data}")
 
                 try:
                     product_id = self.client.create(OdooModel.PRODUCT_PRODUCT, product_data)
-                    logger.info(f"Product created successfully with ID: {product_id} with inventory tracking enabled")
+                    logger.info(f"Product created successfully with ID: {product_id}")
+
+                    # After creating, set the product type to 'product' (storable)
+                    # Get the product.template id
+                    product_info = self.client.read(
+                        OdooModel.PRODUCT_PRODUCT,
+                        [product_id],
+                        fields=['product_tmpl_id']
+                    )
+
+                    if product_info and product_info[0].get('product_tmpl_id'):
+                        template_id = product_info[0]['product_tmpl_id'][0]
+
+                        # Update the template to be storable (handles Odoo version differences)
+                        try:
+                            # Get ALL available fields on product.template to check for is_storable
+                            fields_info = self.client.fields_get(
+                                OdooModel.PRODUCT_TEMPLATE,
+                                fields=[]  # Empty list = get all fields
+                            )
+
+                            update_fields = {}
+
+                            # Check which fields are available and their valid values
+                            # In Odoo 18+, type='consu' + is_storable=True for storable products
+                            # In Odoo 16-17, detailed_type='product' for storable
+                            # In older Odoo, type='product' for storable
+
+                            if 'detailed_type' in fields_info:
+                                # Odoo 16-17: use detailed_type
+                                update_fields['detailed_type'] = 'product'
+                                logger.info("Setting detailed_type='product' (Odoo 16-17)")
+
+                            if 'type' in fields_info:
+                                type_selection = fields_info['type'].get('selection', [])
+                                valid_values = [v[0] for v in type_selection] if type_selection else []
+                                logger.info(f"Available type values: {valid_values}")
+
+                                if 'product' in valid_values:
+                                    # Older Odoo versions
+                                    update_fields['type'] = 'product'
+                                    logger.info("Setting type='product' (Odoo <16)")
+                                elif 'consu' in valid_values:
+                                    # Odoo 18+: 'consu' is used for storable products
+                                    update_fields['type'] = 'consu'
+                                    logger.info("Setting type='consu' (Odoo 18+)")
+
+                                    # CRITICAL: Check if is_storable field exists (Odoo 18+)
+                                    if 'is_storable' in fields_info:
+                                        update_fields['is_storable'] = True
+                                        logger.info("✓ Setting is_storable=True to enable inventory tracking")
+                                    else:
+                                        logger.warning("Field 'is_storable' not found in product.template")
+                                else:
+                                    logger.warning(f"No valid storable type found. Available: {valid_values}")
+
+                            # Update the template with all available fields
+                            if update_fields:
+                                self.client.write(
+                                    OdooModel.PRODUCT_TEMPLATE,
+                                    [template_id],
+                                    update_fields
+                                )
+                                logger.info(f"✓ Product template {template_id} updated to storable: {update_fields}")
+                            else:
+                                logger.error("✗ Could not set product as storable - no valid fields")
+
+                        except Exception as type_error:
+                            logger.error(f"Error setting product type to storable: {type_error}")
+                            import traceback
+                            logger.error(traceback.format_exc())
 
                 except Exception as create_error:
                     logger.error(f"Error creating product: {str(create_error)}")
