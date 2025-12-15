@@ -429,6 +429,13 @@ class XMLInvoiceParser:
             else:
                 real_unit_cost = 0.0
 
+            # Handle products with 100% discount (real_unit_cost = 0)
+            # Use average of original unit prices as fallback
+            if real_unit_cost == 0.0:
+                avg_unit_price = sum(p.precio_unitario for p in product_list) / len(product_list)
+                real_unit_cost = avg_unit_price
+                logger.info(f"  Product has 100% discount, using average unit price: {real_unit_cost}")
+
             if len(product_list) > 1 or product_list[0].precio_total_linea is not None:
                 logger.info(f"  Calculated real cost: total_qty={total_quantity}, total_amount={total_amount}, real_unit_cost={real_unit_cost}")
 
@@ -464,10 +471,16 @@ class XMLInvoiceParser:
         Returns:
             Cleaned XML content without wrapper
         """
+        import logging
+        import re
+        logger = logging.getLogger(__name__)
+
         # Check if content starts with <factura wrapper
         if xml_content.strip().startswith('<factura '):
+            logger.info("Found <factura> wrapper, removing it...")
+            logger.info(f"XML starts with: {xml_content[:200]}")
+
             # Find the first <?xml or <autorizacion tag
-            import re
             # Remove the opening <factura...> tag and everything before the actual XML
             match = re.search(r'<factura[^>]*>\s*(<\?xml|<autorizacion)', xml_content, re.DOTALL)
             if match:
@@ -477,6 +490,12 @@ class XMLInvoiceParser:
 
                 # Remove closing </factura> tag at the end if present
                 xml_content = re.sub(r'</factura>\s*$', '', xml_content, flags=re.DOTALL)
+
+                logger.info(f"Wrapper removed. XML now starts with: {xml_content[:200]}")
+            else:
+                logger.warning("Could not find <?xml or <autorizacion> inside <factura> wrapper")
+        else:
+            logger.info(f"No <factura> wrapper detected. XML starts with: {xml_content[:100]}")
 
         return xml_content.strip()
 
