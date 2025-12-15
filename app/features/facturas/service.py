@@ -135,7 +135,11 @@ class FacturaService:
             cantidad = float(row[2]) if row[2] else 0  # Column C: cantidad
             codigo_barras = str(row[3]).strip() if row[3] else None
 
-            if codigo and codigo_barras and codigo_barras != '':
+            if codigo:
+                # If barcode is empty, use original codigo (no barcode change, only cantidad update)
+                if not codigo_barras or codigo_barras == '':
+                    codigo_barras = codigo
+
                 # Store barcode and cantidad
                 data = {
                     'barcode': codigo_barras,
