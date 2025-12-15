@@ -171,29 +171,44 @@ def update_xml_with_barcodes(unified_xml: str, codigo_map: Dict[str, Dict[str, A
 
         logger.info(f"Barcode replacements made: {replacements_made}")
 
-        # Pass 2: Replace cantidades for each barcode
+        # Pass 2: Replace cantidades for each barcode and remove duplicates
+        # For products that appear multiple times, keep only the first occurrence
+        # with the total quantity and remove the rest
         cantidad_replacements = 0
+        detalles_removed = 0
         for codigo_original, data in codigo_map.items():
             codigo_barras = data['barcode']
             cantidad = data['cantidad']
+
+            # Format cantidad as int if whole number, otherwise as float
+            cantidad_formatted = int(cantidad) if cantidad == int(cantidad) else cantidad
 
             # Find all <detalle> blocks containing this barcode
             # After Pass 1, codigoPrincipal now contains barcode
             detalle_blocks = re.findall(r'<detalle>(.*?)</detalle>', inner_xml, re.DOTALL)
 
+            first_occurrence = True
             for detalle in detalle_blocks:
                 if f'<codigoPrincipal>{codigo_barras}</codigoPrincipal>' in detalle:
-                    # This detalle contains our product, update cantidad
                     old_detalle = f'<detalle>{detalle}</detalle>'
-                    new_detalle = re.sub(
-                        r'<cantidad>.*?</cantidad>',
-                        f'<cantidad>{cantidad}</cantidad>',
-                        old_detalle
-                    )
-                    inner_xml = inner_xml.replace(old_detalle, new_detalle, 1)
-                    cantidad_replacements += 1
+
+                    if first_occurrence:
+                        # Update first occurrence with total quantity
+                        new_detalle = re.sub(
+                            r'<cantidad>.*?</cantidad>',
+                            f'<cantidad>{cantidad_formatted}</cantidad>',
+                            old_detalle
+                        )
+                        inner_xml = inner_xml.replace(old_detalle, new_detalle, 1)
+                        cantidad_replacements += 1
+                        first_occurrence = False
+                    else:
+                        # Remove subsequent occurrences to avoid duplication
+                        inner_xml = inner_xml.replace(old_detalle, '', 1)
+                        detalles_removed += 1
 
         logger.info(f"Cantidad replacements made: {cantidad_replacements}")
+        logger.info(f"Duplicate detalles removed: {detalles_removed}")
 
         # Reconstruct full XML with updated CDATA
         updated_xml = re.sub(
@@ -263,28 +278,43 @@ def _update_sri_authorization_xml(xml_content: str, codigo_map: Dict[str, Dict[s
 
     logger.info(f"Barcode replacements made: {replacements_made}")
 
-    # Pass 2: Replace cantidades for each barcode
+    # Pass 2: Replace cantidades for each barcode and remove duplicates
+    # For products that appear multiple times, keep only the first occurrence
+    # with the total quantity and remove the rest
     cantidad_replacements = 0
+    detalles_removed = 0
     for codigo_original, data in codigo_map.items():
         codigo_barras = data['barcode']
         cantidad = data['cantidad']
 
+        # Format cantidad as int if whole number, otherwise as float
+        cantidad_formatted = int(cantidad) if cantidad == int(cantidad) else cantidad
+
         # Find all <detalle> blocks containing this barcode
         detalle_blocks = re.findall(r'<detalle>(.*?)</detalle>', inner_xml, re.DOTALL)
 
+        first_occurrence = True
         for detalle in detalle_blocks:
             if f'<codigoPrincipal>{codigo_barras}</codigoPrincipal>' in detalle:
-                # This detalle contains our product, update cantidad
                 old_detalle = f'<detalle>{detalle}</detalle>'
-                new_detalle = re.sub(
-                    r'<cantidad>.*?</cantidad>',
-                    f'<cantidad>{cantidad}</cantidad>',
-                    old_detalle
-                )
-                inner_xml = inner_xml.replace(old_detalle, new_detalle, 1)
-                cantidad_replacements += 1
+
+                if first_occurrence:
+                    # Update first occurrence with total quantity
+                    new_detalle = re.sub(
+                        r'<cantidad>.*?</cantidad>',
+                        f'<cantidad>{cantidad_formatted}</cantidad>',
+                        old_detalle
+                    )
+                    inner_xml = inner_xml.replace(old_detalle, new_detalle, 1)
+                    cantidad_replacements += 1
+                    first_occurrence = False
+                else:
+                    # Remove subsequent occurrences to avoid duplication
+                    inner_xml = inner_xml.replace(old_detalle, '', 1)
+                    detalles_removed += 1
 
     logger.info(f"Cantidad replacements made: {cantidad_replacements}")
+    logger.info(f"Duplicate detalles removed: {detalles_removed}")
 
     # Reconstruct full XML with updated CDATA
     updated_xml = re.sub(
