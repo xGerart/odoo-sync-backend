@@ -500,7 +500,6 @@ def get_unified_adjustment_history(
                             'quantity': item.quantity_adjusted,
                             'adjustment_type': item.adjustment_type,
                             'reason': item.reason,
-                            'description': item.description,
                             'success': item.success,
                             'stock_before': item.stock_before,
                             'stock_after': item.stock_after,
