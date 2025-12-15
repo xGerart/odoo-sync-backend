@@ -17,6 +17,7 @@ class FacturaService:
     def extract_productos_from_xmls(xml_files: List[Dict[str, str]]) -> tuple[List[Dict[str, Any]], str]:
         """
         Extract unique products from multiple XML files.
+        Sums quantities for products with the same codigo.
 
         Args:
             xml_files: List of dicts with 'filename' and 'content'
@@ -24,7 +25,6 @@ class FacturaService:
         Returns:
             Tuple of (productos list, unified_xml string)
         """
-        all_productos = []
         productos_map = {}  # Use dict to track unique products by codigo
 
         for xml_data in xml_files:
@@ -33,10 +33,21 @@ class FacturaService:
 
             for producto in productos:
                 codigo = producto['codigo']
-                # Only add if not already in map (keep first occurrence)
+                cantidad = producto.get('cantidad', 0)
+
                 if codigo not in productos_map:
-                    productos_map[codigo] = producto
-                    all_productos.append(producto)
+                    # First occurrence: store with cantidad
+                    productos_map[codigo] = {
+                        'codigo': producto['codigo'],
+                        'descripcion': producto['descripcion'],
+                        'cantidad': cantidad
+                    }
+                else:
+                    # Duplicate: sum quantities
+                    productos_map[codigo]['cantidad'] += cantidad
+
+        # Convert map to list
+        all_productos = list(productos_map.values())
 
         # Create unified XML
         unified_xml = create_unified_xml(xml_files)
@@ -59,7 +70,7 @@ class FacturaService:
         sheet.title = "Productos"
 
         # Headers
-        headers = ['CÓDIGO', 'DESCRIPCIÓN', 'PRECIO UNITARIO', 'CÓDIGO DE BARRAS']
+        headers = ['CÓDIGO', 'DESCRIPCIÓN', 'CANTIDAD', 'CÓDIGO DE BARRAS']
         sheet.append(headers)
 
         # Style headers
@@ -73,20 +84,20 @@ class FacturaService:
             sheet.append([
                 producto['codigo'],
                 producto['descripcion'],
-                producto['precio_unitario'],
+                producto['cantidad'],
                 ''  # Empty barcode column
             ])
 
         # Set column widths
         sheet.column_dimensions['A'].width = 15
         sheet.column_dimensions['B'].width = 70
-        sheet.column_dimensions['C'].width = 18
+        sheet.column_dimensions['C'].width = 12
         sheet.column_dimensions['D'].width = 20
 
-        # Format price column
+        # Format cantidad column (integer format)
         for row in range(2, len(productos) + 2):
             cell = sheet.cell(row=row, column=3)
-            cell.number_format = '$#,##0.00'
+            cell.number_format = '0'
 
         # Format barcode column as text
         for row in range(2, len(productos) + 2):
@@ -121,12 +132,17 @@ class FacturaService:
                 continue
 
             codigo = str(row[0]).strip() if row[0] else None
+            cantidad = float(row[2]) if row[2] else 0  # Column C: cantidad
             codigo_barras = str(row[3]).strip() if row[3] else None
 
             if codigo and codigo_barras and codigo_barras != '':
-                # Store both trimmed and with-space versions to handle XMLs with trailing spaces
-                codigo_map[codigo] = codigo_barras
-                codigo_map[codigo + ' '] = codigo_barras  # Handle trailing space in XML
+                # Store barcode and cantidad
+                data = {
+                    'barcode': codigo_barras,
+                    'cantidad': cantidad
+                }
+                codigo_map[codigo] = data
+                codigo_map[codigo + ' '] = data  # Handle trailing space in XML
 
         # Update XMLs
         updated_xmls = update_xml_with_barcodes(unified_xml, codigo_map)

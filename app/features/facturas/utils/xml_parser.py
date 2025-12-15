@@ -48,14 +48,11 @@ def extract_productos_from_xml(xml_content: str) -> List[Dict[str, Any]]:
                           .replace('&Ntilde;', 'Ñ'))
 
             cantidad = float(cantidad_match.group(1))
-            precio_total = float(precio_total_match.group(1))
-
-            precio_unitario = precio_total / cantidad if cantidad > 0 else 0
 
             productos.append({
                 'codigo': codigo,
                 'descripcion': descripcion,
-                'precio_unitario': precio_unitario
+                'cantidad': cantidad
             })
 
     return productos
@@ -94,9 +91,9 @@ def create_unified_xml(xml_files: List[Dict[str, str]]) -> str:
     return unified
 
 
-def update_xml_with_barcodes(unified_xml: str, codigo_map: Dict[str, str]) -> List[Dict[str, str]]:
+def update_xml_with_barcodes(unified_xml: str, codigo_map: Dict[str, Dict[str, Any]]) -> List[Dict[str, str]]:
     """
-    Update unified XML with barcode mappings and split into individual XMLs.
+    Update unified XML with barcode and quantity mappings and split into individual XMLs.
 
     Handles two formats:
     1. Backend-generated unified XML: <facturasUnificadas><factura>...</factura></facturasUnificadas>
@@ -104,7 +101,7 @@ def update_xml_with_barcodes(unified_xml: str, codigo_map: Dict[str, str]) -> Li
 
     Args:
         unified_xml: Unified XML content
-        codigo_map: Dictionary mapping codigo_original -> codigo_barras
+        codigo_map: Dictionary mapping codigo_original -> {'barcode': str, 'cantidad': float}
 
     Returns:
         List of dicts with 'filename' and 'content' for each updated XML
@@ -159,9 +156,10 @@ def update_xml_with_barcodes(unified_xml: str, codigo_map: Dict[str, str]) -> Li
         logger.info(f"Found comprobante CDATA section")
         inner_xml = comprobante_match.group(1)
 
-        # Replace códigos with barcodes
+        # Pass 1: Replace códigos with barcodes
         replacements_made = 0
-        for codigo_original, codigo_barras in codigo_map.items():
+        for codigo_original, data in codigo_map.items():
+            codigo_barras = data['barcode']
             # Escape special regex characters in codigo
             escaped_codigo = re.escape(codigo_original)
             pattern = f'(<codigoPrincipal>){escaped_codigo}(</codigoPrincipal>)'
@@ -171,7 +169,31 @@ def update_xml_with_barcodes(unified_xml: str, codigo_map: Dict[str, str]) -> Li
                 replacements_made += count
                 inner_xml = new_xml
 
-        logger.info(f"Replacements made: {replacements_made}")
+        logger.info(f"Barcode replacements made: {replacements_made}")
+
+        # Pass 2: Replace cantidades for each barcode
+        cantidad_replacements = 0
+        for codigo_original, data in codigo_map.items():
+            codigo_barras = data['barcode']
+            cantidad = data['cantidad']
+
+            # Find all <detalle> blocks containing this barcode
+            # After Pass 1, codigoPrincipal now contains barcode
+            detalle_blocks = re.findall(r'<detalle>(.*?)</detalle>', inner_xml, re.DOTALL)
+
+            for detalle in detalle_blocks:
+                if f'<codigoPrincipal>{codigo_barras}</codigoPrincipal>' in detalle:
+                    # This detalle contains our product, update cantidad
+                    old_detalle = f'<detalle>{detalle}</detalle>'
+                    new_detalle = re.sub(
+                        r'<cantidad>.*?</cantidad>',
+                        f'<cantidad>{cantidad}</cantidad>',
+                        old_detalle
+                    )
+                    inner_xml = inner_xml.replace(old_detalle, new_detalle, 1)
+                    cantidad_replacements += 1
+
+        logger.info(f"Cantidad replacements made: {cantidad_replacements}")
 
         # Reconstruct full XML with updated CDATA
         updated_xml = re.sub(
@@ -202,13 +224,13 @@ def update_xml_with_barcodes(unified_xml: str, codigo_map: Dict[str, str]) -> Li
     return individual_xmls
 
 
-def _update_sri_authorization_xml(xml_content: str, codigo_map: Dict[str, str]) -> List[Dict[str, str]]:
+def _update_sri_authorization_xml(xml_content: str, codigo_map: Dict[str, Dict[str, Any]]) -> List[Dict[str, str]]:
     """
-    Update an SRI authorization XML with barcode mappings.
+    Update an SRI authorization XML with barcode and quantity mappings.
 
     Args:
         xml_content: SRI authorization XML content
-        codigo_map: Dictionary mapping codigo_original -> codigo_barras
+        codigo_map: Dictionary mapping codigo_original -> {'barcode': str, 'cantidad': float}
 
     Returns:
         List with single updated XML dict
@@ -227,9 +249,10 @@ def _update_sri_authorization_xml(xml_content: str, codigo_map: Dict[str, str]) 
     inner_xml = comprobante_match.group(1)
     logger.info(f"Found CDATA section, length: {len(inner_xml)}")
 
-    # Replace códigos with barcodes
+    # Pass 1: Replace códigos with barcodes
     replacements_made = 0
-    for codigo_original, codigo_barras in codigo_map.items():
+    for codigo_original, data in codigo_map.items():
+        codigo_barras = data['barcode']
         escaped_codigo = re.escape(codigo_original)
         pattern = f'(<codigoPrincipal>){escaped_codigo}(</codigoPrincipal>)'
         # Use lambda to avoid backslash interpretation issues with numeric barcodes
@@ -238,7 +261,30 @@ def _update_sri_authorization_xml(xml_content: str, codigo_map: Dict[str, str]) 
             replacements_made += count
             inner_xml = new_xml
 
-    logger.info(f"Replacements made: {replacements_made}")
+    logger.info(f"Barcode replacements made: {replacements_made}")
+
+    # Pass 2: Replace cantidades for each barcode
+    cantidad_replacements = 0
+    for codigo_original, data in codigo_map.items():
+        codigo_barras = data['barcode']
+        cantidad = data['cantidad']
+
+        # Find all <detalle> blocks containing this barcode
+        detalle_blocks = re.findall(r'<detalle>(.*?)</detalle>', inner_xml, re.DOTALL)
+
+        for detalle in detalle_blocks:
+            if f'<codigoPrincipal>{codigo_barras}</codigoPrincipal>' in detalle:
+                # This detalle contains our product, update cantidad
+                old_detalle = f'<detalle>{detalle}</detalle>'
+                new_detalle = re.sub(
+                    r'<cantidad>.*?</cantidad>',
+                    f'<cantidad>{cantidad}</cantidad>',
+                    old_detalle
+                )
+                inner_xml = inner_xml.replace(old_detalle, new_detalle, 1)
+                cantidad_replacements += 1
+
+    logger.info(f"Cantidad replacements made: {cantidad_replacements}")
 
     # Reconstruct full XML with updated CDATA
     updated_xml = re.sub(

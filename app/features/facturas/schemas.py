@@ -9,7 +9,7 @@ class ProductoExtracted(BaseModel):
     """Product extracted from XML."""
     codigo: str
     descripcion: str
-    precio_unitario: float
+    cantidad: float
     codigo_barras: Optional[str] = None
 
 
