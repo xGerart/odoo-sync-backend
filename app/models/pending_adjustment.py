@@ -42,6 +42,8 @@ class AdjustmentReason(str, Enum):
     THEFT = "theft"
     RETURN_OUT = "return_out"
     CORRECTION_OUT = "correction_out"
+    LOCAL_SERVICE_USE = "local_service_use"  # Uso local de servicios
+    EXPIRED = "expired"  # Caducado
     # ADJUSTMENT reasons
     PHYSICAL_COUNT = "physical_count"
     SYSTEM_CORRECTION = "system_correction"
