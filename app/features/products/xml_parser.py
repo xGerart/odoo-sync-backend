@@ -258,15 +258,28 @@ class XMLInvoiceParser:
             return None
 
     def _parse_generic_format(self, xml_dict: Dict[str, Any]) -> List[ProductData]:
-        """Parse generic XML format."""
+        """Parse generic XML format (including SRI authorization format)."""
         products = []
 
         try:
             # Try to find products in common structures
             items = None
+            comprobante_content = None
 
+            # Try SRI autorizacion format first (handle CDATA)
+            if 'autorizacion' in xml_dict:
+                comprobante_cdata = xml_dict['autorizacion'].get('comprobante', '')
+                if comprobante_cdata:
+                    # Parse the inner XML from CDATA
+                    inner_xml_dict = xmltodict.parse(comprobante_cdata)
+                    comprobante_content = inner_xml_dict.get('factura')
+
+            # If we found SRI format, extract detalles from it
+            if comprobante_content:
+                detalles = comprobante_content.get('detalles', {})
+                items = detalles.get('detalle', [])
             # Try common paths
-            if 'invoice' in xml_dict:
+            elif 'invoice' in xml_dict:
                 items = xml_dict['invoice'].get('items', {}).get('item', [])
             elif 'factura' in xml_dict:
                 items = xml_dict['factura'].get('detalles', {}).get('detalle', [])
