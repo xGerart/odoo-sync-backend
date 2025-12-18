@@ -12,6 +12,7 @@ from app.models.pending_adjustment import (
     AdjustmentType,
     AdjustmentReason
 )
+from app.models.product_sync_history import ProductSyncHistory, ProductSyncHistoryItem
 
 __all__ = [
     "User",
@@ -24,5 +25,7 @@ __all__ = [
     "PendingAdjustmentItem",
     "AdjustmentStatus",
     "AdjustmentType",
-    "AdjustmentReason"
+    "AdjustmentReason",
+    "ProductSyncHistory",
+    "ProductSyncHistoryItem"
 ]

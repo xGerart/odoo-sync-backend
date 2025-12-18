@@ -278,12 +278,19 @@ class SyncRequest(BaseModel):
     products: List[dict] = Field(..., description="List of products to sync")
     profit_margin: float = Field(default=0.50, ge=0, le=1, description="Profit margin (0-1)")
     quantity_mode: str = Field(default="replace", description="Quantity mode: replace or add")
+    xml_filename: Optional[str] = Field(default="manual_sync.xml", description="Name of XML file")
+    xml_provider: Optional[str] = Field(default="Generic", description="Provider name")
+    apply_iva: Optional[bool] = Field(default=True, description="Whether IVA was applied")
+    xml_content: Optional[str] = Field(default=None, description="Original XML content")
 
     class Config:
         json_schema_extra = {
             "example": {
                 "products": [],
                 "profit_margin": 0.50,
-                "quantity_mode": "replace"
+                "quantity_mode": "replace",
+                "xml_filename": "factura_20251217.xml",
+                "xml_provider": "D'Mujeres",
+                "apply_iva": True
             }
         }

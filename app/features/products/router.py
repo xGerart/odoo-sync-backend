@@ -1,9 +1,11 @@
 """
 Product management endpoints.
 """
-from fastapi import APIRouter, Depends, File, UploadFile, Form, HTTPException, status
+from fastapi import APIRouter, Depends, File, UploadFile, Form, HTTPException, status, Query, Response
 from sqlalchemy.orm import Session
-from typing import List
+from typing import List, Optional
+from datetime import datetime
+import base64
 from app.core.database import get_db
 from app.infrastructure.odoo import get_odoo_manager, OdooConnectionManager
 from app.schemas.product import (
@@ -13,6 +15,10 @@ from app.schemas.product import (
     SyncRequest,
     XMLParseResponse,
     InconsistencyResponse
+)
+from app.schemas.product_sync import (
+    ProductSyncHistoryResponse,
+    ProductSyncHistoryListResponse
 )
 from app.schemas.common import MessageResponse
 from app.schemas.auth import UserInfo
@@ -26,6 +32,7 @@ from app.features.products.xml_parser import XMLInvoiceParser
 from app.core.constants import XMLProvider, QuantityMode
 from app.core.exceptions import ValidationError
 from app.utils.validators import validate_xml_file
+from app.models.product_sync_history import ProductSyncHistory, ProductSyncHistoryItem
 
 
 router = APIRouter(prefix="/products", tags=["Products"])
@@ -175,7 +182,16 @@ async def sync_products(
             mode = QuantityMode.REPLACE
 
         # Sync products
-        result = service.sync_products_bulk(request.products, username=current_user.username)
+        result = service.sync_products_bulk(
+            products=request.products,
+            username=current_user.username,
+            xml_filename=request.xml_filename or "manual_sync.xml",
+            xml_provider=request.xml_provider or "Generic",
+            profit_margin=request.profit_margin,
+            quantity_mode=request.quantity_mode,
+            apply_iva=request.apply_iva if request.apply_iva is not None else True,
+            xml_content=request.xml_content
+        )
 
         return result
 
@@ -404,4 +420,223 @@ def update_product(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Update failed: {str(e)}"
+        )
+
+
+# Product Sync History Endpoints
+
+@router.get("/sync/history", response_model=ProductSyncHistoryListResponse)
+def get_product_sync_history(
+    skip: int = Query(default=0, ge=0),
+    limit: int = Query(default=50, ge=1, le=100),
+    xml_provider: Optional[str] = Query(default=None),
+    executed_by: Optional[str] = Query(default=None),
+    start_date: Optional[str] = Query(default=None),
+    end_date: Optional[str] = Query(default=None),
+    db: Session = Depends(get_db),
+    current_user: UserInfo = Depends(require_admin)
+):
+    """
+    Get all product sync history (Admin only).
+
+    **Requires:** Admin role
+
+    - **skip**: Number of records to skip
+    - **limit**: Max number of records to return
+    - **xml_provider**: Filter by provider (D'Mujeres, LANSEY, Generic)
+    - **executed_by**: Filter by username
+    - **start_date**: Filter by start date (ISO format)
+    - **end_date**: Filter by end date (ISO format)
+    """
+    try:
+        query = db.query(ProductSyncHistory).order_by(ProductSyncHistory.executed_at.desc())
+
+        # Apply filters
+        if xml_provider:
+            query = query.filter(ProductSyncHistory.xml_provider == xml_provider)
+        if executed_by:
+            query = query.filter(ProductSyncHistory.executed_by == executed_by)
+        if start_date:
+            start_dt = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
+            query = query.filter(ProductSyncHistory.executed_at >= start_dt)
+        if end_date:
+            end_dt = datetime.fromisoformat(end_date.replace('Z', '+00:00'))
+            query = query.filter(ProductSyncHistory.executed_at <= end_dt)
+
+        # Get total count
+        total = query.count()
+
+        # Get paginated results with items
+        history_records = query.offset(skip).limit(limit).all()
+
+        # Load items for each record
+        for record in history_records:
+            record.items  # This triggers lazy loading of items
+
+        return ProductSyncHistoryListResponse(
+            history=[ProductSyncHistoryResponse.model_validate(record) for record in history_records],
+            total=total
+        )
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to fetch sync history: {str(e)}"
+        )
+
+
+@router.get("/sync/history/me", response_model=ProductSyncHistoryListResponse)
+def get_my_product_sync_history(
+    skip: int = Query(default=0, ge=0),
+    limit: int = Query(default=50, ge=1, le=100),
+    start_date: Optional[str] = Query(default=None),
+    end_date: Optional[str] = Query(default=None),
+    db: Session = Depends(get_db),
+    current_user: UserInfo = Depends(get_current_user)
+):
+    """
+    Get product sync history for current user.
+
+    **Requires:** Any authenticated user
+
+    - **skip**: Number of records to skip
+    - **limit**: Max number of records to return
+    - **start_date**: Filter by start date (ISO format)
+    - **end_date**: Filter by end date (ISO format)
+    """
+    try:
+        query = db.query(ProductSyncHistory).filter(
+            ProductSyncHistory.executed_by == current_user.username
+        ).order_by(ProductSyncHistory.executed_at.desc())
+
+        # Apply date filters
+        if start_date:
+            start_dt = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
+            query = query.filter(ProductSyncHistory.executed_at >= start_dt)
+        if end_date:
+            end_dt = datetime.fromisoformat(end_date.replace('Z', '+00:00'))
+            query = query.filter(ProductSyncHistory.executed_at <= end_dt)
+
+        # Get total count
+        total = query.count()
+
+        # Get paginated results with items
+        history_records = query.offset(skip).limit(limit).all()
+
+        # Load items for each record
+        for record in history_records:
+            record.items  # This triggers lazy loading of items
+
+        return ProductSyncHistoryListResponse(
+            history=[ProductSyncHistoryResponse.model_validate(record) for record in history_records],
+            total=total
+        )
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to fetch sync history: {str(e)}"
+        )
+
+
+@router.get("/sync/history/{history_id}", response_model=ProductSyncHistoryResponse)
+def get_product_sync_history_detail(
+    history_id: int,
+    db: Session = Depends(get_db),
+    current_user: UserInfo = Depends(get_current_user)
+):
+    """
+    Get detailed product sync history record.
+
+    **Requires:** Authenticated user (can only view own records unless admin)
+
+    - **history_id**: ID of the sync history record
+    """
+    try:
+        record = db.query(ProductSyncHistory).filter(
+            ProductSyncHistory.id == history_id
+        ).first()
+
+        if not record:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Sync history record not found"
+            )
+
+        # Check permissions (non-admin can only view their own)
+        if current_user.role != "admin" and record.executed_by != current_user.username:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Not authorized to view this record"
+            )
+
+        # Load items
+        record.items  # Trigger lazy loading
+
+        return ProductSyncHistoryResponse.model_validate(record)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to fetch sync history detail: {str(e)}"
+        )
+
+
+@router.get("/sync/history/{history_id}/pdf")
+def download_product_sync_pdf(
+    history_id: int,
+    db: Session = Depends(get_db),
+    current_user: UserInfo = Depends(get_current_user)
+):
+    """
+    Download PDF report for a product sync.
+
+    **Requires:** Authenticated user (can only download own PDFs unless admin)
+
+    - **history_id**: ID of the sync history record
+    """
+    try:
+        record = db.query(ProductSyncHistory).filter(
+            ProductSyncHistory.id == history_id
+        ).first()
+
+        if not record:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Sync history record not found"
+            )
+
+        # Check permissions
+        if current_user.role != "admin" and record.executed_by != current_user.username:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Not authorized to download this PDF"
+            )
+
+        if not record.pdf_content:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="PDF not available for this record"
+            )
+
+        # Decode PDF from base64
+        pdf_bytes = base64.b64decode(record.pdf_content)
+
+        # Return as downloadable file
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": f"attachment; filename={record.pdf_filename or 'sync_report.pdf'}"
+            }
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to download PDF: {str(e)}"
         )

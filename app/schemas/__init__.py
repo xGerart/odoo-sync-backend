@@ -66,6 +66,11 @@ from app.schemas.adjustment import (
     AdjustmentHistoryItemResponse,
     AdjustmentHistoryResponse
 )
+from app.schemas.product_sync import (
+    ProductSyncHistoryItemResponse,
+    ProductSyncHistoryResponse,
+    ProductSyncHistoryListResponse
+)
 
 __all__ = [
     # Common
@@ -126,4 +131,8 @@ __all__ = [
     "PendingAdjustmentListResponse",
     "AdjustmentHistoryItemResponse",
     "AdjustmentHistoryResponse",
+    # Product Sync History
+    "ProductSyncHistoryItemResponse",
+    "ProductSyncHistoryResponse",
+    "ProductSyncHistoryListResponse",
 ]

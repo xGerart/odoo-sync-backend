@@ -27,6 +27,8 @@ from app.utils.formatters import (
     round_price_ecuador
 )
 from app.utils.validators import validate_barcode, validate_quantity, validate_price
+from app.models.product_sync_history import ProductSyncHistory, ProductSyncHistoryItem
+from app.utils.timezone import get_ecuador_now
 
 
 class ProductService:
@@ -635,13 +637,29 @@ class ProductService:
                 error_details=str(e)[:500]
             )
 
-    def sync_products_bulk(self, products: List[Dict[str, Any]], username: str = "Sistema") -> SyncResponse:
+    def sync_products_bulk(
+        self,
+        products: List[Dict[str, Any]],
+        username: str = "Sistema",
+        xml_filename: str = "manual_sync.xml",
+        xml_provider: str = "Generic",
+        profit_margin: Optional[float] = None,
+        quantity_mode: str = "replace",
+        apply_iva: bool = True,
+        xml_content: Optional[str] = None
+    ) -> SyncResponse:
         """
         Sync multiple products.
 
         Args:
             products: List of mapped product data
             username: Username performing the sync
+            xml_filename: Name of the XML file
+            xml_provider: Provider name (D'Mujeres, LANSEY, Generic)
+            profit_margin: Profit margin applied
+            quantity_mode: Quantity mode (replace or add)
+            apply_iva: Whether IVA was applied
+            xml_content: Original XML content
 
         Returns:
             Sync response with results and PDF report
@@ -752,6 +770,27 @@ class ProductService:
             import traceback
             logger.error(traceback.format_exc())
 
+        # Save to history if database session is available
+        if self.db:
+            try:
+                self._create_product_sync_history(
+                    xml_filename=xml_filename,
+                    xml_provider=xml_provider,
+                    profit_margin=profit_margin,
+                    quantity_mode=quantity_mode,
+                    apply_iva=apply_iva,
+                    executed_by=username,
+                    results=results,
+                    pdf_content=pdf_content,
+                    pdf_filename=pdf_filename,
+                    xml_content=xml_content
+                )
+                logger.info("Successfully saved sync history to database")
+            except Exception as e:
+                logger.error(f"Failed to save sync history: {str(e)}")
+                import traceback
+                logger.error(traceback.format_exc())
+
         return SyncResponse(
             results=results,
             total_processed=len(products),
@@ -761,6 +800,116 @@ class ProductService:
             pdf_filename=pdf_filename,
             pdf_content=pdf_content
         )
+
+    def _create_product_sync_history(
+        self,
+        xml_filename: str,
+        xml_provider: str,
+        profit_margin: Optional[float],
+        quantity_mode: str,
+        apply_iva: bool,
+        executed_by: str,
+        results: List[SyncResult],
+        pdf_content: Optional[str],
+        pdf_filename: Optional[str],
+        xml_content: Optional[str]
+    ) -> ProductSyncHistory:
+        """
+        Create comprehensive historical record of product synchronization.
+
+        Args:
+            xml_filename: Name of the XML file
+            xml_provider: Provider name (D'Mujeres, LANSEY, Generic)
+            profit_margin: Profit margin applied
+            quantity_mode: Quantity mode (replace or add)
+            apply_iva: Whether IVA was applied
+            executed_by: Username who executed the sync
+            results: List of sync results
+            pdf_content: Base64 encoded PDF content
+            pdf_filename: PDF filename
+            xml_content: Original XML content
+
+        Returns:
+            Created ProductSyncHistory record
+
+        Raises:
+            Exception: If database operations fail
+        """
+        import logging
+
+        logger = logging.getLogger(__name__)
+        logger.info(f"Creating product sync history record for file: {xml_filename}")
+
+        # Calculate totals
+        total_items = len(results)
+        successful_items = sum(1 for r in results if r.success)
+        failed_items = sum(1 for r in results if not r.success)
+        created_count = sum(1 for r in results if r.action == "created" and r.success)
+        updated_count = sum(1 for r in results if r.action == "updated" and r.success)
+
+        # Build error summary
+        error_summary = None
+        errors = [r.error_details or r.message for r in results if not r.success]
+        if errors:
+            error_summary = "; ".join(errors[:5])  # Limit to first 5 errors
+            if len(errors) > 5:
+                error_summary += f" ... and {len(errors) - 5} more errors"
+
+        # Create main history record
+        history = ProductSyncHistory(
+            xml_filename=xml_filename,
+            xml_provider=xml_provider,
+            profit_margin=profit_margin,
+            quantity_mode=quantity_mode,
+            apply_iva=apply_iva,
+            executed_by=executed_by,
+            executed_at=get_ecuador_now().replace(tzinfo=None),  # SQLite needs naive datetime
+            total_items=total_items,
+            successful_items=successful_items,
+            failed_items=failed_items,
+            created_count=created_count,
+            updated_count=updated_count,
+            pdf_content=pdf_content,
+            pdf_filename=pdf_filename,
+            xml_content=xml_content,
+            has_errors=failed_items > 0,
+            error_summary=error_summary
+        )
+
+        self.db.add(history)
+        self.db.flush()  # Get ID for items
+
+        logger.info(f"Product sync history record created with ID: {history.id}")
+
+        # Create individual item records
+        for result in results:
+            item = ProductSyncHistoryItem(
+                history_id=history.id,
+                barcode=result.barcode or "",
+                product_id=result.product_id or 0,
+                product_name=result.product_name or "",
+                action=result.action,
+                quantity_processed=result.qty_available or 0,
+                success=result.success,
+                error_message=result.error_details or result.message if not result.success else None,
+                stock_before=result.old_stock if hasattr(result, 'old_stock') else None,
+                stock_after=result.new_stock if hasattr(result, 'new_stock') else result.qty_available,
+                stock_updated=getattr(result, 'stock_updated', False),
+                old_standard_price=result.old_price if hasattr(result, 'old_price') else None,
+                new_standard_price=result.standard_price,
+                old_list_price=None,  # Not tracked in current SyncResult
+                new_list_price=result.list_price,
+                price_updated=getattr(result, 'price_updated', False),
+                is_new_product=(result.action == "created")
+            )
+            self.db.add(item)
+
+        # Commit all changes
+        self.db.commit()
+
+        logger.info(f"✓ Product sync history saved: {successful_items} successful, {failed_items} failed")
+
+        return history
 
     def _update_stock_quantity(
         self,
