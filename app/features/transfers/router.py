@@ -608,9 +608,13 @@ def get_my_transfer_history(
         all_records = []
 
         # 1. Get completed transfers (from transfer_history)
-        # Filter directly by executed_by instead of joining with pending_transfers
-        completed_query = db.query(TransferHistory).filter(
-            TransferHistory.executed_by == current_user.username
+        # Include transfers executed by user OR prepared by user (even if executed by admin)
+        completed_query = db.query(TransferHistory).outerjoin(
+            PendingTransfer,
+            TransferHistory.pending_transfer_id == PendingTransfer.id
+        ).filter(
+            (TransferHistory.executed_by == current_user.username) |  # Executed by user
+            (PendingTransfer.username == current_user.username)        # Prepared by user
         )
         completed_transfers = completed_query.all()
 
