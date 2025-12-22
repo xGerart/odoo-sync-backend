@@ -514,6 +514,25 @@ def get_transfer_history(
                 continue
             # Convert pending_transfer to history format
             total_quantity = sum(item.quantity for item in pending.items)
+
+            # Convert pending items to history item format
+            items_list = []
+            for item in pending.items:
+                item_dict = {
+                    "id": item.id,
+                    "barcode": item.barcode,
+                    "product_id": item.product_id,
+                    "product_name": item.product_name,
+                    "quantity_requested": item.quantity,
+                    "quantity_transferred": 0,  # Not yet transferred
+                    "success": False,  # Not yet executed
+                    "error_message": None,
+                    "unit_price": item.unit_price,
+                    "total_value": 0,
+                    "is_new_product": False
+                }
+                items_list.append(item_dict)
+
             history_dict = {
                 "id": pending.id,
                 "status": pending.status,  # "PENDING" or "PENDING_VERIFICATION"
@@ -531,7 +550,7 @@ def get_transfer_history(
                 "has_errors": False,
                 "error_summary": None,
                 "pdf_filename": None,
-                "items": []
+                "items": items_list
             }
             all_records.append((pending.created_at, TransferHistoryResponse(**history_dict)))
 
@@ -640,6 +659,25 @@ def get_my_transfer_history(
                 continue
             # Convert pending_transfer to history format
             total_quantity = sum(item.quantity for item in pending.items)
+
+            # Convert pending items to history item format
+            items_list = []
+            for item in pending.items:
+                item_dict = {
+                    "id": item.id,
+                    "barcode": item.barcode,
+                    "product_id": item.product_id,
+                    "product_name": item.product_name,
+                    "quantity_requested": item.quantity,
+                    "quantity_transferred": 0,  # Not yet transferred
+                    "success": False,  # Not yet executed
+                    "error_message": None,
+                    "unit_price": item.unit_price,
+                    "total_value": 0,
+                    "is_new_product": False
+                }
+                items_list.append(item_dict)
+
             history_dict = {
                 "id": pending.id,
                 "status": pending.status,  # "PENDING" or "PENDING_VERIFICATION"
@@ -657,7 +695,7 @@ def get_my_transfer_history(
                 "has_errors": False,
                 "error_summary": None,
                 "pdf_filename": None,
-                "items": []
+                "items": items_list
             }
             all_records.append((pending.created_at, TransferHistoryResponse(**history_dict)))
 
