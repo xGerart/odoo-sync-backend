@@ -505,7 +505,13 @@ def get_transfer_history(
 
         pending_transfers = pending_query.all()
 
+        # Get IDs of pending_transfers that already have history records (to avoid duplicates)
+        pending_ids_with_history = {record.pending_transfer_id for record in completed_transfers if record.pending_transfer_id}
+
         for pending in pending_transfers:
+            # Skip if this pending transfer already has a history record (avoid duplicates)
+            if pending.id in pending_ids_with_history:
+                continue
             # Convert pending_transfer to history format
             total_quantity = sum(item.quantity for item in pending.items)
             history_dict = {
@@ -625,7 +631,13 @@ def get_my_transfer_history(
         )
         pending_transfers = pending_query.all()
 
+        # Get IDs of pending_transfers that already have history records (to avoid duplicates)
+        pending_ids_with_history = {record.pending_transfer_id for record in completed_transfers if record.pending_transfer_id}
+
         for pending in pending_transfers:
+            # Skip if this pending transfer already has a history record (avoid duplicates)
+            if pending.id in pending_ids_with_history:
+                continue
             # Convert pending_transfer to history format
             total_quantity = sum(item.quantity for item in pending.items)
             history_dict = {
