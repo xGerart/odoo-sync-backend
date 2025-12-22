@@ -321,6 +321,25 @@ def confirm_transfer(
     import logging
     logger = logging.getLogger(__name__)
 
+    logger.info(f"=== CONFIRM TRANSFER START ===")
+    logger.info(f"Transfer ID: {transfer_id}")
+    logger.info(f"Admin: {current_user.username}")
+    logger.info(f"Products in request: {len(request.products)}")
+
+    # Validate that products have quantities > 0
+    if not request.products:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No products in transfer request"
+        )
+
+    total_quantity = sum(item.quantity for item in request.products)
+    if total_quantity == 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Transfer has no products with quantity > 0"
+        )
+
     try:
         # Verify both connections exist
         if not manager.is_principal_connected():
@@ -466,12 +485,15 @@ def get_transfer_history(
             }
             all_records.append((record.executed_at, TransferHistoryResponse(**history_dict)))
 
-        # 2. Get pending and cancelled transfers (from pending_transfers)
+        # 2. Get pending, cancelled, and confirmed (without history) transfers (from pending_transfers)
+        # Note: CONFIRMED transfers should have a history record, but we include them
+        # here as fallback in case history creation failed
         pending_query = db.query(PendingTransfer).filter(
             PendingTransfer.status.in_([
                 TransferStatus.PENDING,
                 TransferStatus.PENDING_VERIFICATION,
-                TransferStatus.CANCELLED
+                TransferStatus.CANCELLED,
+                TransferStatus.CONFIRMED
             ])
         )
 
@@ -589,13 +611,16 @@ def get_my_transfer_history(
             }
             all_records.append((record.executed_at, TransferHistoryResponse(**history_dict)))
 
-        # 2. Get pending and cancelled transfers (from pending_transfers)
+        # 2. Get pending, cancelled, and confirmed (without history) transfers (from pending_transfers)
+        # Note: CONFIRMED transfers should have a history record, but we include them
+        # here as fallback in case history creation failed
         pending_query = db.query(PendingTransfer).filter(
             PendingTransfer.username == current_user.username,
             PendingTransfer.status.in_([
                 TransferStatus.PENDING,
                 TransferStatus.PENDING_VERIFICATION,
-                TransferStatus.CANCELLED
+                TransferStatus.CANCELLED,
+                TransferStatus.CONFIRMED
             ])
         )
         pending_transfers = pending_query.all()

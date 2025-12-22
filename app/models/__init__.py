@@ -13,6 +13,8 @@ from app.models.pending_adjustment import (
     AdjustmentReason
 )
 from app.models.product_sync_history import ProductSyncHistory, ProductSyncHistoryItem
+from app.models.pending_invoice import PendingInvoice, PendingInvoiceItem, InvoiceStatus
+from app.models.invoice_history import InvoiceHistory, InvoiceHistoryItem
 
 __all__ = [
     "User",
@@ -27,5 +29,10 @@ __all__ = [
     "AdjustmentType",
     "AdjustmentReason",
     "ProductSyncHistory",
-    "ProductSyncHistoryItem"
+    "ProductSyncHistoryItem",
+    "PendingInvoice",
+    "PendingInvoiceItem",
+    "InvoiceStatus",
+    "InvoiceHistory",
+    "InvoiceHistoryItem"
 ]

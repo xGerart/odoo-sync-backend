@@ -520,13 +520,26 @@ class TransferService:
                     if dest_snapshot_after:
                         destination_after.append(dest_snapshot_after)
 
-                # Add to processed list
+                # Get stock AFTER for history
+                principal_stock_after = principal_stock_before - item.quantity
+                branch_stock_after = branch_stock_before + item.quantity
+
+                # Add to processed list with correct field names for history
                 processed_products.append({
-                    'name': principal_product['name'],
+                    'product_id': principal_product['id'],
+                    'product_name': principal_product['name'],
+                    'name': principal_product['name'],  # Keep for XML generation
                     'barcode': item.barcode,
-                    'quantity': item.quantity,
+                    'quantity': item.quantity,  # Keep for XML generation
+                    'quantity_requested': item.quantity,
+                    'quantity_transferred': item.quantity,
                     'standard_price': principal_product['standard_price'],
                     'list_price': principal_product['list_price'],
+                    'unit_price': principal_product['list_price'],
+                    'stock_before': principal_stock_before,
+                    'stock_after': principal_stock_after,
+                    'dest_stock_before': branch_stock_before,
+                    'dest_stock_after': branch_stock_after,
                     'stock_before_principal': principal_stock_before,
                     'stock_before_branch': branch_stock_before
                 })
