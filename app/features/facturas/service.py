@@ -27,11 +27,12 @@ from app.schemas.invoice import (
     InvoiceItemResponse,
     InvoiceSyncResponse,
     InvoiceHistoryListResponse,
-    InvoiceHistoryResponse
+    InvoiceHistoryResponse,
+    InvoiceHistoryItemResponse
 )
 from app.core.constants import UserRole, OdooModel
 from app.utils.timezone import get_ecuador_now
-from .utils import extract_productos_from_xml, create_unified_xml, update_xml_with_barcodes
+from .utils import extract_productos_from_xml, create_unified_xml, update_xml_with_barcodes, update_xml_with_barcodes_consolidated
 
 
 logger = logging.getLogger(__name__)
@@ -58,7 +59,8 @@ class FacturaService:
     def upload_and_create_pending_invoices(
         self,
         xml_files: List[Dict[str, str]],
-        uploaded_by: UserInfo
+        uploaded_by: UserInfo,
+        barcode_source: str = 'codigoAuxiliar'
     ) -> InvoiceUploadResponse:
         """
         Admin uploads XML invoices from SRI and creates pending invoices.
@@ -66,6 +68,7 @@ class FacturaService:
         Args:
             xml_files: List of dicts with 'filename' and 'content'
             uploaded_by: User uploading the invoices
+            barcode_source: Which XML field to use as barcode ('codigoPrincipal' or 'codigoAuxiliar')
 
         Returns:
             InvoiceUploadResponse with summary
@@ -81,8 +84,8 @@ class FacturaService:
                 filename = xml_data['filename']
                 content = xml_data['content']
 
-                # Extract products from XML
-                productos = extract_productos_from_xml(content)
+                # Extract products from XML with barcode source preference
+                productos = extract_productos_from_xml(content, barcode_source=barcode_source)
 
                 # Extract invoice metadata
                 metadata = self._extract_invoice_metadata(content)
@@ -96,6 +99,7 @@ class FacturaService:
                     uploaded_by_username=uploaded_by.username,
                     xml_filename=filename,
                     xml_content=content,
+                    barcode_source=barcode_source,
                     status=InvoiceStatus.PENDIENTE_REVISION
                 )
 
@@ -279,6 +283,62 @@ class FacturaService:
 
         return self._item_to_response(item, user)
 
+    def update_item_sale_price(
+        self,
+        invoice_id: int,
+        item_id: int,
+        manual_sale_price: Optional[float],
+        user: UserInfo
+    ) -> InvoiceItemResponse:
+        """
+        Admin updates manual sale price for an item.
+
+        Args:
+            invoice_id: Invoice ID
+            item_id: Item ID
+            manual_sale_price: Manual sale price with IVA (null to revert to calculated)
+            user: Current user (must be admin)
+
+        Returns:
+            Updated item
+        """
+        if not self.db:
+            raise ValueError("Database session required")
+
+        # Verify user is admin
+        if user.role != UserRole.ADMIN:
+            raise ValueError("Only admins can update sale prices")
+
+        # Get invoice
+        invoice = self.db.query(PendingInvoice).filter(
+            PendingInvoice.id == invoice_id
+        ).first()
+
+        if not invoice:
+            raise ValueError(f"Invoice {invoice_id} not found")
+
+        # Verify status (can only edit prices in CORREGIDA or PARCIALMENTE_SINCRONIZADA)
+        if invoice.status not in [InvoiceStatus.CORREGIDA, InvoiceStatus.PARCIALMENTE_SINCRONIZADA]:
+            raise ValueError(f"Cannot update prices for invoice in status {invoice.status}")
+
+        # Get item
+        item = self.db.query(PendingInvoiceItem).filter(
+            PendingInvoiceItem.id == item_id,
+            PendingInvoiceItem.invoice_id == invoice_id
+        ).first()
+
+        if not item:
+            raise ValueError(f"Item {item_id} not found in invoice {invoice_id}")
+
+        # Update manual sale price
+        item.manual_sale_price = manual_sale_price
+
+        self.db.commit()
+
+        logger.info(f"Updated manual sale price for item {item_id} in invoice {invoice_id} by {user.username}: {manual_sale_price}")
+
+        return self._item_to_response(item, user)
+
     def submit_invoice(
         self,
         invoice_id: int,
@@ -324,19 +384,136 @@ class FacturaService:
 
         return self._invoice_to_response(invoice, user)
 
+    def _transform_items_to_product_format(
+        self,
+        items: List[PendingInvoiceItem],
+        profit_margin: float,
+        apply_iva: bool,
+        quantity_mode: str
+    ) -> List[Dict[str, Any]]:
+        """
+        Transform PendingInvoiceItems to ProductService format.
+        Applies consolidation and price calculation logic from XML parser.
+
+        Args:
+            items: Items from pending invoice
+            profit_margin: Profit margin (0.5 = 50%)
+            apply_iva: Whether to calculate price with IVA
+            quantity_mode: 'add' or 'replace' stock mode
+
+        Returns:
+            List of products in format expected by ProductService.sync_products_bulk()
+        """
+        from app.utils.formatters import (
+            apply_profit_margin,
+            calculate_price_without_iva,
+            round_to_half_dollar
+        )
+
+        # 1. Consolidate items by barcode (like xml_parser.py:366-454)
+        consolidated = {}
+
+        for item in items:
+            if not item.barcode:
+                continue
+
+            if item.barcode not in consolidated:
+                consolidated[item.barcode] = {
+                    'items': [],
+                    'total_quantity': 0.0,
+                    'total_amount': 0.0,
+                    'name': item.product_name,
+                    'manual_sale_prices': []  # Track manual prices for this barcode
+                }
+
+            # Use total_price if exists, otherwise calculate
+            line_total = item.total_price or (item.quantity * item.unit_price)
+
+            consolidated[item.barcode]['items'].append(item)
+            consolidated[item.barcode]['total_quantity'] += item.quantity
+            consolidated[item.barcode]['total_amount'] += line_total
+
+            # Track manual sale price if set
+            if item.manual_sale_price is not None:
+                consolidated[item.barcode]['manual_sale_prices'].append(item.manual_sale_price)
+
+        # 2. Calculate real cost and transform to product format
+        mapped_products = []
+
+        for barcode, data in consolidated.items():
+            # Calculate weighted average unit cost
+            if data['total_quantity'] > 0:
+                real_unit_cost = data['total_amount'] / data['total_quantity']
+            else:
+                real_unit_cost = 0.0
+
+            # Handle 100% discount products (cost = 0)
+            if real_unit_cost == 0.0 and data['items']:
+                avg_unit_price = sum(i.unit_price for i in data['items']) / len(data['items'])
+                real_unit_cost = avg_unit_price
+
+            # 3. Calculate sale price
+            # Check if admin set a manual price
+            manual_prices = data.get('manual_sale_prices', [])
+            if manual_prices and all(p == manual_prices[0] for p in manual_prices):
+                # All items have same manual price - use it
+                display_price = manual_prices[0]
+
+                # Calculate price without IVA for Odoo
+                if apply_iva:
+                    sale_price = calculate_price_without_iva(display_price)
+                else:
+                    sale_price = display_price
+                    display_price = None
+            else:
+                # No manual price - calculate automatically (like xml_parser.py:574-632)
+                # Apply profit margin
+                price_with_margin = apply_profit_margin(real_unit_cost, profit_margin)
+
+                # Round to next $0.50
+                display_price = round_to_half_dollar(price_with_margin)
+
+                # Calculate price without IVA for Odoo
+                if apply_iva:
+                    sale_price = calculate_price_without_iva(display_price)
+                else:
+                    sale_price = display_price
+                    display_price = None
+
+            # 4. Create product in expected format
+            mapped_product = {
+                "name": data['name'],
+                "qty_available": data['total_quantity'],
+                "barcode": barcode,
+                "standard_price": real_unit_cost,      # Cost
+                "list_price": sale_price,              # Sale price without IVA
+                "display_price": display_price,        # Sale price with IVA
+                "type": "storable",
+                "tracking": "none",
+                "available_in_pos": True,
+                "quantity_mode": quantity_mode
+            }
+
+            mapped_products.append(mapped_product)
+
+        return mapped_products
+
     def sync_invoice_to_odoo(
         self,
         invoice_id: int,
         user: UserInfo,
-        notes: Optional[str]
+        notes: Optional[str],
+        item_ids: Optional[List[int]] = None
     ) -> InvoiceSyncResponse:
         """
         Admin synchronizes invoice to Odoo.
+        Supports partial sync by selecting specific items.
 
         Args:
             invoice_id: Invoice ID
             user: Current user (must be admin)
             notes: Optional admin notes
+            item_ids: Optional list of item IDs to sync. If None, syncs all items.
 
         Returns:
             Sync result with errors
@@ -359,70 +536,103 @@ class FacturaService:
         if not invoice:
             raise ValueError(f"Invoice {invoice_id} not found")
 
-        # Verify status
-        if invoice.status != InvoiceStatus.CORREGIDA:
-            raise ValueError(f"Invoice must be in CORREGIDA status to sync (current: {invoice.status})")
+        # Verify status (can sync if CORREGIDA or PARCIALMENTE_SINCRONIZADA)
+        if invoice.status not in [InvoiceStatus.CORREGIDA, InvoiceStatus.PARCIALMENTE_SINCRONIZADA]:
+            raise ValueError(
+                f"Invoice must be in CORREGIDA or PARCIALMENTE_SINCRONIZADA status to sync (current: {invoice.status})"
+            )
 
-        successful_items = []
-        failed_items = []
-        errors = []
+        try:
+            # 1. Filter items if item_ids provided (partial sync)
+            items_to_sync = invoice.items
+            if item_ids is not None:
+                items_to_sync = [item for item in invoice.items if item.id in item_ids]
+                if not items_to_sync:
+                    raise ValueError(f"No valid items found with IDs: {item_ids}")
+                logger.info(f"Partial sync: selected {len(items_to_sync)} of {len(invoice.items)} items")
+            else:
+                logger.info(f"Full sync: processing all {len(invoice.items)} items")
 
-        # Process each item
-        for item in invoice.items:
-            try:
-                if not item.barcode:
-                    failed_items.append({
-                        'item': item,
-                        'error': 'No barcode provided'
-                    })
-                    errors.append(f"{item.product_name}: No barcode")
-                    continue
+            # 2. Transform items to product format
+            mapped_products = self._transform_items_to_product_format(
+                items=items_to_sync,
+                profit_margin=invoice.profit_margin,
+                apply_iva=invoice.apply_iva,
+                quantity_mode=invoice.quantity_mode
+            )
 
-                # Search product by barcode in Odoo
-                products = self.odoo_client.search_read(
-                    OdooModel.PRODUCT_PRODUCT,
-                    domain=[['barcode', '=', item.barcode]],
-                    fields=['id', 'name', 'qty_available'],
-                    limit=1
-                )
+            logger.info(f"Consolidated to {len(mapped_products)} unique products")
 
-                if not products:
-                    failed_items.append({
-                        'item': item,
-                        'error': 'Product not found in Odoo'
-                    })
-                    errors.append(f"{item.product_name} ({item.barcode}): Not found in Odoo")
-                    item.sync_success = False
-                    item.sync_error = "Product not found in Odoo"
-                    continue
+            # 2. Use ProductService to sync (reuses ALL existing logic)
+            from app.features.products.service import ProductService
 
-                product = products[0]
-                item.product_id = product['id']
+            product_service = ProductService(
+                odoo_client=self.odoo_client,
+                db=self.db
+            )
 
-                # TODO: Update stock in Odoo (inventory adjustment or stock.quant update)
-                # For now, just mark as successful
-                # In real implementation, you would:
-                # 1. Create inventory adjustment
-                # 2. Or update stock.quant directly
-                # 3. Handle stock locations
+            # 3. Sync all products (creates/updates products, prices, and stock)
+            sync_response = product_service.sync_products_bulk(
+                products=mapped_products,
+                username=user.username,
+                xml_filename=invoice.xml_filename or f"invoice_{invoice.invoice_number}.xml",
+                xml_provider=invoice.supplier_name,
+                profit_margin=invoice.profit_margin,
+                quantity_mode=invoice.quantity_mode,
+                apply_iva=invoice.apply_iva,
+                xml_content=invoice.xml_content
+            )
 
-                item.sync_success = True
-                successful_items.append(item)
+            # 4. Update items with sync results
+            # Map barcode -> items for updating
+            items_by_barcode = {}
+            for item in invoice.items:
+                if item.barcode:
+                    if item.barcode not in items_by_barcode:
+                        items_by_barcode[item.barcode] = []
+                    items_by_barcode[item.barcode].append(item)
 
-                logger.info(f"Synced item {item.id}: {item.product_name} ({item.barcode})")
+            # Update items based on sync results
+            errors = []
+            successful_items = []
+            failed_items = []
 
-            except Exception as e:
-                logger.error(f"Error syncing item {item.id}: {str(e)}")
-                failed_items.append({
-                    'item': item,
-                    'error': str(e)
-                })
-                errors.append(f"{item.product_name}: {str(e)}")
-                item.sync_success = False
-                item.sync_error = str(e)
+            for result in sync_response.results:
+                if result.barcode in items_by_barcode:
+                    for item in items_by_barcode[result.barcode]:
+                        if result.success:
+                            item.product_id = result.product_id
+                            item.sync_success = True
+                            item.sync_error = None
+                            successful_items.append(item)
+                        else:
+                            item.sync_success = False
+                            item.sync_error = result.message
+                            failed_items.append({'item': item, 'error': result.message})
+                            errors.append(f"{item.product_name} ({result.barcode}): {result.message}")
 
-        # Update invoice status
-        invoice.status = InvoiceStatus.SINCRONIZADA
+        except Exception as e:
+            logger.error(f"Error syncing invoice {invoice_id}: {str(e)}")
+            self.db.rollback()
+            raise
+
+        # Update invoice status based on sync completeness
+        # Count how many items are successfully synced
+        total_synced = sum(1 for item in invoice.items if item.sync_success)
+        total_items = len(invoice.items)
+
+        if total_synced == total_items:
+            # All items synced
+            invoice.status = InvoiceStatus.SINCRONIZADA
+            logger.info(f"Invoice {invoice_id} fully synced: {total_synced}/{total_items} items")
+        elif total_synced > 0:
+            # Some items synced
+            invoice.status = InvoiceStatus.PARCIALMENTE_SINCRONIZADA
+            logger.info(f"Invoice {invoice_id} partially synced: {total_synced}/{total_items} items")
+        else:
+            # No items synced (keep current status)
+            logger.warning(f"Invoice {invoice_id}: no items synced successfully")
+
         invoice.synced_at = get_ecuador_now().replace(tzinfo=None)
         invoice.synced_by = user.username
         if notes:
@@ -443,8 +653,66 @@ class FacturaService:
             message=f"Synced {len(successful_items)}/{len(invoice.items)} items successfully",
             successful_items=len(successful_items),
             failed_items=len(failed_items),
-            errors=errors
+            errors=errors,
+            profit_margin=invoice.profit_margin,
+            quantity_mode=invoice.quantity_mode
         )
+
+    def update_invoice_config(
+        self,
+        invoice_id: int,
+        profit_margin: Optional[float],
+        apply_iva: Optional[bool],
+        quantity_mode: Optional[str],
+        user: UserInfo
+    ) -> PendingInvoiceResponse:
+        """
+        Update invoice sync configuration.
+
+        Args:
+            invoice_id: Invoice ID
+            profit_margin: Profit margin (0-2)
+            apply_iva: Apply IVA to sale price
+            quantity_mode: 'add' or 'replace'
+            user: Current user
+
+        Returns:
+            Updated invoice response
+        """
+        if not self.db:
+            raise ValueError("Database session required")
+
+        invoice = self.db.query(PendingInvoice).filter(
+            PendingInvoice.id == invoice_id
+        ).first()
+
+        if not invoice:
+            raise ValueError(f"Invoice {invoice_id} not found")
+
+        # Only allow config changes for pending/in-review/corrected invoices
+        if invoice.status not in [
+            InvoiceStatus.PENDIENTE_REVISION,
+            InvoiceStatus.EN_REVISION,
+            InvoiceStatus.CORREGIDA
+        ]:
+            raise ValueError(f"Cannot configure invoice in status {invoice.status}")
+
+        # Update fields
+        if profit_margin is not None:
+            invoice.profit_margin = profit_margin
+
+        if apply_iva is not None:
+            invoice.apply_iva = apply_iva
+
+        if quantity_mode is not None:
+            invoice.quantity_mode = quantity_mode
+
+        self.db.commit()
+        self.db.refresh(invoice)
+
+        logger.info(f"Invoice {invoice_id} config updated: margin={invoice.profit_margin}, iva={invoice.apply_iva}, mode={invoice.quantity_mode}")
+
+        return self._invoice_to_response(invoice, user)
 
     def get_invoice_history(
         self,
@@ -552,9 +820,20 @@ class FacturaService:
         )
 
         self.db.add(history)
+        self.db.flush()  # Flush to get history.id before creating items
 
         # Create history items
         for item in pending_invoice.items:
+            # Calculate the sale price that was synced to Odoo
+            if item.manual_sale_price is not None:
+                # Manual price was set
+                sale_price_for_history = item.manual_sale_price
+            else:
+                # Calculate automatic price (same logic as transform method)
+                from app.features.facturas.utils import apply_profit_margin, round_to_half_dollar
+                price_with_margin = apply_profit_margin(item.unit_price, pending_invoice.profit_margin)
+                sale_price_for_history = round_to_half_dollar(price_with_margin)
+
             history_item = InvoiceHistoryItem(
                 history_id=history.id,
                 codigo_original=item.codigo_original,
@@ -563,6 +842,7 @@ class FacturaService:
                 product_name=item.product_name,
                 quantity=item.quantity,
                 unit_price=item.unit_price,
+                sale_price=sale_price_for_history,
                 total_value=item.total_price,
                 success=item.sync_success or False,
                 error_message=item.sync_error,
@@ -607,6 +887,7 @@ class FacturaService:
         # Filter prices for bodeguero
         unit_price = item.unit_price if user.role != UserRole.BODEGUERO else None
         total_price = item.total_price if user.role != UserRole.BODEGUERO else None
+        manual_sale_price = item.manual_sale_price if user.role != UserRole.BODEGUERO else None
 
         return InvoiceItemResponse(
             id=item.id,
@@ -617,7 +898,11 @@ class FacturaService:
             barcode=item.barcode,
             modified_by_bodeguero=item.modified_by_bodeguero,
             unit_price=unit_price,
-            total_price=total_price
+            total_price=total_price,
+            manual_sale_price=manual_sale_price,
+            sync_success=item.sync_success,
+            sync_error=item.sync_error,
+            product_id=item.product_id
         )
 
     def _history_to_response(self, history: InvoiceHistory) -> InvoiceHistoryResponse:
@@ -798,7 +1083,7 @@ class FacturaService:
                 codigo_map[codigo] = data
                 codigo_map[codigo + ' '] = data  # Handle trailing space in XML
 
-        # Update XMLs
-        updated_xmls = update_xml_with_barcodes(unified_xml, codigo_map)
+        # Update XMLs with consolidated option (single XML with all products)
+        updated_xmls = update_xml_with_barcodes_consolidated(unified_xml, codigo_map)
 
         return updated_xmls

@@ -5,6 +5,7 @@ from typing import List, Optional
 from fastapi import APIRouter, File, UploadFile, HTTPException, status, Depends
 from fastapi.responses import Response, StreamingResponse
 import io
+import zipfile
 import openpyxl
 from sqlalchemy.orm import Session
 
@@ -18,6 +19,7 @@ from app.features.auth.dependencies import (
 )
 from app.schemas.invoice import (
     InvoiceItemUpdateRequest,
+    InvoiceItemSalePriceUpdateRequest,
     InvoiceSubmitRequest,
     InvoiceSyncRequest,
     PendingInvoiceListResponse,
@@ -40,6 +42,7 @@ router = APIRouter(prefix="/facturas", tags=["Facturas"])
 @router.post("/upload", response_model=InvoiceUploadResponse)
 async def upload_invoices(
     xml_files: List[UploadFile] = File(...),
+    barcode_source: str = 'codigoAuxiliar',
     db: Session = Depends(get_db),
     current_user: UserInfo = Depends(require_admin)
 ):
@@ -50,6 +53,9 @@ async def upload_invoices(
 
     Parses XML files, extracts invoice metadata and items,
     and saves them to database for bodeguero review.
+
+    **Parameters:**
+    - barcode_source: Which XML field to use as barcode ('codigoPrincipal' or 'codigoAuxiliar')
     """
     try:
         # Read all XML files
@@ -61,9 +67,13 @@ async def upload_invoices(
                 'content': content.decode('utf-8')
             })
 
-        # Create pending invoices (no Odoo client needed for upload)
+        # Create pending invoices with barcode source preference
         service = FacturaService(db=db)
-        result = service.upload_and_create_pending_invoices(xml_data_list, current_user)
+        result = service.upload_and_create_pending_invoices(
+            xml_data_list,
+            current_user,
+            barcode_source=barcode_source
+        )
 
         return result
 
@@ -183,6 +193,49 @@ def update_invoice_item(
         )
 
 
+@router.patch("/pending/{invoice_id}/items/{item_id}/price")
+def update_item_sale_price(
+    invoice_id: int,
+    item_id: int,
+    request: InvoiceItemSalePriceUpdateRequest,
+    db: Session = Depends(get_db),
+    current_user: UserInfo = Depends(require_admin)
+):
+    """
+    Update manual sale price for an invoice item (admin only).
+
+    **Requires:** Admin role
+
+    Allows admin to override the calculated sale price with a manual value.
+    - Set manual_sale_price to a value to override calculated price
+    - Set manual_sale_price to null to revert to calculated price
+    - Price should include IVA (will be subtracted when syncing if apply_iva is enabled)
+
+    Invoice must be in CORREGIDA or PARCIALMENTE_SINCRONIZADA status.
+    """
+    try:
+        service = FacturaService(db=db)
+        result = service.update_item_sale_price(
+            invoice_id,
+            item_id,
+            request.manual_sale_price,
+            current_user
+        )
+
+        return result
+
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error updating sale price: {str(e)}"
+        )
+
+
 @router.post("/pending/{invoice_id}/submit", response_model=PendingInvoiceResponse)
 def submit_invoice(
     invoice_id: int,
@@ -216,6 +269,63 @@ def submit_invoice(
         )
 
 
+@router.patch("/pending/{invoice_id}/config", response_model=PendingInvoiceResponse)
+async def update_invoice_config(
+    invoice_id: int,
+    profit_margin: Optional[float] = None,
+    apply_iva: Optional[bool] = None,
+    quantity_mode: Optional[str] = None,
+    db: Session = Depends(get_db),
+    current_user: UserInfo = Depends(require_admin)
+):
+    """
+    Update invoice sync configuration (admin only).
+
+    **Requires:** Admin role
+
+    Configure price calculation before syncing:
+    - **profit_margin**: Profit margin (0.5 = 50%, range: 0-2)
+    - **apply_iva**: Apply IVA to sale price calculation
+    - **quantity_mode**: 'add' (sum to existing) or 'replace' (override) stock
+
+    Can only update invoices in PENDIENTE_REVISION, EN_REVISION, or CORREGIDA status.
+    """
+    try:
+        service = FacturaService(odoo_client=None, db=db)
+
+        # Validate profit margin
+        if profit_margin is not None and not (0 <= profit_margin <= 2):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Profit margin must be between 0 and 2 (0-200%)"
+            )
+
+        # Validate quantity mode
+        if quantity_mode is not None and quantity_mode not in ['add', 'replace']:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Quantity mode must be 'add' or 'replace'"
+            )
+
+        return service.update_invoice_config(
+            invoice_id=invoice_id,
+            profit_margin=profit_margin,
+            apply_iva=apply_iva,
+            quantity_mode=quantity_mode,
+            user=current_user
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error updating invoice config: {str(e)}"
+        )
+
+
 @router.post("/pending/{invoice_id}/sync", response_model=InvoiceSyncResponse)
 def sync_invoice_to_odoo(
     invoice_id: int,
@@ -229,18 +339,28 @@ def sync_invoice_to_odoo(
 
     **Requires:** Admin role
 
+    **Supports partial sync:** Optionally provide `item_ids` to sync only specific items.
+
     Synchronizes invoice items to Odoo inventory:
     - Searches products by barcode
-    - Updates stock quantities
+    - Creates/updates products with calculated prices (cost + margin + IVA)
+    - Updates stock quantities (add or replace mode)
     - Creates history record with results
-    - Changes invoice status to SINCRONIZADA
+    - Changes invoice status:
+      - SINCRONIZADA if all items synced
+      - PARCIALMENTE_SINCRONIZADA if some items synced
 
-    Invoice must be in CORREGIDA status.
+    Invoice must be in CORREGIDA or PARCIALMENTE_SINCRONIZADA status.
     """
     try:
-        odoo_client = manager.get_client()
+        odoo_client = manager.get_principal_client()
         service = FacturaService(db=db, odoo_client=odoo_client)
-        result = service.sync_invoice_to_odoo(invoice_id, current_user, request.notes)
+        result = service.sync_invoice_to_odoo(
+            invoice_id=invoice_id,
+            user=current_user,
+            notes=request.notes,
+            item_ids=request.item_ids
+        )
 
         return result
 
@@ -250,6 +370,9 @@ def sync_invoice_to_odoo(
             detail=str(e)
         )
     except Exception as e:
+        import traceback
+        print(f"ERROR IN SYNC: {str(e)}")
+        print(traceback.format_exc())
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error syncing invoice: {str(e)}"
@@ -280,6 +403,9 @@ def get_invoice_history(
         return result
 
     except Exception as e:
+        import traceback
+        print(f"ERROR IN HISTORY: {str(e)}")
+        print(traceback.format_exc())
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error fetching history: {str(e)}"
@@ -326,6 +452,57 @@ def download_invoice_xml(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error downloading XML: {str(e)}"
+        )
+
+
+@router.delete("/pending/{invoice_id}")
+def delete_pending_invoice(
+    invoice_id: int,
+    db: Session = Depends(get_db),
+    current_user: UserInfo = Depends(require_admin)
+):
+    """
+    Delete a pending invoice (admin only).
+
+    **Requires:** Admin role
+
+    Deletes the invoice and all associated items.
+    Cannot delete invoices that have already been synced to Odoo.
+    """
+    try:
+        from app.models import PendingInvoice
+
+        invoice = db.query(PendingInvoice).filter(PendingInvoice.id == invoice_id).first()
+
+        if not invoice:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Invoice {invoice_id} not found"
+            )
+
+        # Prevent deletion of synced invoices
+        if invoice.status == 'sincronizada':
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Cannot delete synced invoices. They are already in Odoo."
+            )
+
+        # Delete the invoice (cascade will delete items)
+        db.delete(invoice)
+        db.commit()
+
+        return {
+            "success": True,
+            "message": f"Invoice {invoice.invoice_number or invoice_id} deleted successfully"
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error deleting invoice: {str(e)}"
         )
 
 
@@ -483,7 +660,9 @@ async def update_xmls_with_barcodes(
 
     **This endpoint is deprecated.** Use the new /upload workflow instead.
 
-    Uploads Excel with barcodes and unified XML, returns updated XMLs as ZIP.
+    Uploads Excel with barcodes and unified XML.
+    - If there's only 1 XML, returns it directly as XML file
+    - If there are multiple XMLs, returns them as a ZIP file containing all updated XMLs
     """
     try:
         import logging
@@ -518,21 +697,44 @@ async def update_xmls_with_barcodes(
         updated_xmls = service.update_xmls_with_barcodes(unified_xml, excel_data)
         logger.info(f"Updated XMLs generated: {len(updated_xmls)}")
 
-        # For now, return first updated XML (in production, return ZIP with all files)
+        # Validate we have updated XMLs
         if not updated_xmls:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="No se pudieron generar XMLs actualizados"
             )
 
-        # Return first XML as example (TODO: return ZIP with all files)
-        first_xml = updated_xmls[0]
-        logger.info(f"Returning XML: {first_xml['filename']}")
+        # If only one XML, return it directly
+        if len(updated_xmls) == 1:
+            first_xml = updated_xmls[0]
+            logger.info(f"Returning single XML: {first_xml['filename']}")
+            return Response(
+                content=first_xml['content'].encode('utf-8'),
+                media_type="application/xml",
+                headers={
+                    "Content-Disposition": f"attachment; filename={first_xml['filename']}"
+                }
+            )
+
+        # Multiple XMLs: create ZIP file
+        logger.info(f"Creating ZIP with {len(updated_xmls)} XMLs")
+        zip_buffer = io.BytesIO()
+
+        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+            for xml_data in updated_xmls:
+                filename = xml_data['filename']
+                content = xml_data['content']
+                logger.info(f"Adding to ZIP: {filename}")
+                zip_file.writestr(filename, content.encode('utf-8'))
+
+        zip_buffer.seek(0)
+        logger.info("ZIP created successfully")
+
         return Response(
-            content=first_xml['content'].encode('utf-8'),
-            media_type="application/xml",
+            content=zip_buffer.getvalue(),
+            media_type="application/zip",
             headers={
-                "Content-Disposition": f"attachment; filename={first_xml['filename']}"
+                "Content-Disposition": "attachment; filename=facturas_actualizadas.zip"
             }
         )
 

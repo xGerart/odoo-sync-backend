@@ -161,12 +161,18 @@ class SyncReport(BaseReport):
 
         # Table rows
         for idx, product in enumerate(products, 1):
+            # Use display_price if available (price with IVA), otherwise calculate it
+            display_price = product.get('display_price')
+            if display_price is None:
+                list_price = product.get('list_price', 0)
+                display_price = list_price * 1.15 if list_price else 0
+
             row = [
                 str(idx),
                 product.get('barcode', 'N/A'),
                 PDFService.truncate_text(product.get('product_name', 'N/A'), 35),
                 PDFService.format_currency(product.get('standard_price', 0)),
-                PDFService.format_currency(product.get('list_price', 0)),
+                PDFService.format_currency(display_price),  # Price WITH IVA
                 PDFService.format_quantity(product.get('qty_available', 0))
             ]
             data.append(row)

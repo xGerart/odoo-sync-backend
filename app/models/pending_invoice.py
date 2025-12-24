@@ -20,7 +20,8 @@ class InvoiceStatus(str, Enum):
     PENDIENTE_REVISION = "pendiente_revision"  # Admin uploaded, waiting for bodeguero
     EN_REVISION = "en_revision"  # Bodeguero working on it
     CORREGIDA = "corregida"  # Bodeguero finished, waiting for admin sync
-    SINCRONIZADA = "sincronizada"  # Admin synced to Odoo
+    PARCIALMENTE_SINCRONIZADA = "parcialmente_sincronizada"  # Some items synced, others pending
+    SINCRONIZADA = "sincronizada"  # All items synced to Odoo
 
 
 class PendingInvoice(Base):
@@ -43,6 +44,9 @@ class PendingInvoice(Base):
     uploaded_by_username = Column(String(50), nullable=False)
     xml_filename = Column(String(255), nullable=False)
     xml_content = Column(Text, nullable=False)
+
+    # Barcode extraction preference
+    barcode_source = Column(String(20), nullable=True, default='codigoAuxiliar')  # 'codigoPrincipal' or 'codigoAuxiliar'
 
     # Status tracking
     status = Column(
@@ -67,6 +71,11 @@ class PendingInvoice(Base):
     # Notes
     notes = Column(Text, nullable=True)
 
+    # Sync configuration (for price calculation)
+    profit_margin = Column(Float, default=0.5, nullable=False)  # 50% default margin
+    apply_iva = Column(Boolean, default=True, nullable=False)  # Apply IVA to sale price
+    quantity_mode = Column(String(10), default='add', nullable=False)  # 'add' or 'replace' stock
+
     # Relationship to items
     items = relationship("PendingInvoiceItem", back_populates="invoice", cascade="all, delete-orphan")
 
@@ -83,6 +92,7 @@ class PendingInvoice(Base):
             "uploaded_by_id": self.uploaded_by_id,
             "uploaded_by_username": self.uploaded_by_username,
             "xml_filename": self.xml_filename,
+            "barcode_source": self.barcode_source,
             "status": self.status.value if isinstance(self.status, InvoiceStatus) else self.status,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
@@ -123,6 +133,9 @@ class PendingInvoiceItem(Base):
     unit_price = Column(Float, nullable=True)
     total_price = Column(Float, nullable=True)
 
+    # Manual sale price (editable by admin, overrides calculated price)
+    manual_sale_price = Column(Float, nullable=True)  # Price with IVA, manually set by admin
+
     # Tracking
     modified_by_bodeguero = Column(Boolean, default=False, nullable=False)
 
@@ -149,6 +162,7 @@ class PendingInvoiceItem(Base):
             "barcode": self.barcode,
             "unit_price": self.unit_price,
             "total_price": self.total_price,
+            "manual_sale_price": self.manual_sale_price,
             "modified_by_bodeguero": self.modified_by_bodeguero,
             "product_id": self.product_id,
             "sync_success": self.sync_success,

@@ -25,7 +25,7 @@ class InvoiceHistory(Base):
     id = Column(Integer, primary_key=True, index=True)
 
     # Link to original pending invoice (nullable if pending is deleted)
-    pending_invoice_id = Column(Integer, ForeignKey("pending_invoices.id"), nullable=True, index=True)
+    pending_invoice_id = Column(Integer, ForeignKey("pending_invoices.id", ondelete="SET NULL"), nullable=True, index=True)
 
     # Invoice metadata (snapshot)
     invoice_number = Column(String(50), nullable=False)
@@ -102,8 +102,9 @@ class InvoiceHistoryItem(Base):
     quantity = Column(Float, nullable=False)
 
     # Prices
-    unit_price = Column(Float, nullable=True)
-    total_value = Column(Float, nullable=True)
+    unit_price = Column(Float, nullable=True)  # Cost
+    sale_price = Column(Float, nullable=True)  # Sale price that was synced to Odoo
+    total_value = Column(Float, nullable=True)  # Total cost (unit_price * quantity)
 
     # Sync result
     success = Column(Boolean, default=False, nullable=False)
@@ -132,6 +133,7 @@ class InvoiceHistoryItem(Base):
             "product_name": self.product_name,
             "quantity": self.quantity,
             "unit_price": self.unit_price,
+            "sale_price": self.sale_price,
             "total_value": self.total_value,
             "success": self.success,
             "error_message": self.error_message,

@@ -7,15 +7,16 @@ from typing import List, Dict, Any
 from html import unescape
 
 
-def extract_productos_from_xml(xml_content: str) -> List[Dict[str, Any]]:
+def extract_productos_from_xml(xml_content: str, barcode_source: str = 'codigoAuxiliar') -> List[Dict[str, Any]]:
     """
     Extract products from XML factura content.
 
     Args:
         xml_content: XML string content
+        barcode_source: Which field to use as barcode ('codigoPrincipal' or 'codigoAuxiliar')
 
     Returns:
-        List of product dictionaries
+        List of product dictionaries with 'codigo', 'descripcion', 'cantidad'
     """
     productos = []
 
@@ -33,13 +34,28 @@ def extract_productos_from_xml(xml_content: str) -> List[Dict[str, Any]]:
 
     for detalle_content in detalles:
         # Extract fields from detalle
-        codigo_match = re.search(r'<codigoPrincipal>(.*?)</codigoPrincipal>', detalle_content)
+        codigo_principal_match = re.search(r'<codigoPrincipal>(.*?)</codigoPrincipal>', detalle_content)
+        codigo_auxiliar_match = re.search(r'<codigoAuxiliar>(.*?)</codigoAuxiliar>', detalle_content)
         descripcion_match = re.search(r'<descripcion>(.*?)</descripcion>', detalle_content)
         cantidad_match = re.search(r'<cantidad>(.*?)</cantidad>', detalle_content)
+        precio_unitario_match = re.search(r'<precioUnitario>(.*?)</precioUnitario>', detalle_content)
         precio_total_match = re.search(r'<precioTotalSinImpuesto>(.*?)</precioTotalSinImpuesto>', detalle_content)
 
-        if codigo_match and descripcion_match and cantidad_match and precio_total_match:
-            codigo = codigo_match.group(1)
+        if descripcion_match and cantidad_match:
+            # Extract both codes
+            codigo_principal = codigo_principal_match.group(1).strip() if codigo_principal_match else ''
+            codigo_auxiliar = codigo_auxiliar_match.group(1).strip() if codigo_auxiliar_match else ''
+
+            # Select code based on preference
+            if barcode_source == 'codigoPrincipal':
+                codigo = codigo_principal if codigo_principal else codigo_auxiliar
+            else:  # Default to codigoAuxiliar
+                codigo = codigo_auxiliar if codigo_auxiliar else codigo_principal
+
+            # Skip if no code available
+            if not codigo:
+                continue
+
             descripcion = unescape(descripcion_match.group(1))
 
             # Replace common HTML entities
@@ -49,10 +65,26 @@ def extract_productos_from_xml(xml_content: str) -> List[Dict[str, Any]]:
 
             cantidad = float(cantidad_match.group(1))
 
+            # Extract prices
+            precio_unitario = None
+            precio_total = None
+
+            if precio_unitario_match:
+                precio_unitario = float(precio_unitario_match.group(1))
+
+            if precio_total_match:
+                precio_total = float(precio_total_match.group(1))
+
+            # Calculate unit price if not available but total is
+            if precio_unitario is None and precio_total is not None and cantidad > 0:
+                precio_unitario = precio_total / cantidad
+
             productos.append({
                 'codigo': codigo,
                 'descripcion': descripcion,
-                'cantidad': cantidad
+                'cantidad': cantidad,
+                'precio_unitario': precio_unitario,
+                'precio_total': precio_total
             })
 
     return productos
@@ -342,3 +374,156 @@ def unescape_xml(text: str) -> str:
             .replace('&quot;', '"')
             .replace('&apos;', "'")
             .replace('&amp;', '&'))
+
+
+def update_xml_with_barcodes_consolidated(unified_xml: str, codigo_map: Dict[str, Dict[str, Any]]) -> List[Dict[str, str]]:
+    """
+    Update unified XML and consolidate all invoices into a single XML with all products.
+
+    This function:
+    1. Extracts all products from all invoices
+    2. Consolidates products with the same barcode (summing quantities)
+    3. Updates barcodes and quantities from codigo_map
+    4. Generates a single XML with all consolidated products
+
+    Args:
+        unified_xml: Unified XML content with multiple invoices
+        codigo_map: Dictionary mapping codigo_original -> {'barcode': str, 'cantidad': float}
+
+    Returns:
+        List with single dict containing consolidated XML
+    """
+    import logging
+    from datetime import datetime
+    logger = logging.getLogger(__name__)
+
+    logger.info("Starting consolidated XML update")
+    logger.info(f"Codigo map entries: {len(codigo_map)}")
+
+    # Check if this is a single SRI authorization XML
+    if '<autorizacion>' in unified_xml and '<facturasUnificadas>' not in unified_xml:
+        logger.info("Single XML detected, using standard update")
+        return _update_sri_authorization_xml(unified_xml, codigo_map)
+
+    # Extract all facturas
+    logger.info("Extracting all invoices from unified XML")
+    factura_pattern = re.compile(r'<factura[^>]*>(.*?)</factura>', re.DOTALL)
+    facturas = list(factura_pattern.finditer(unified_xml))
+    logger.info(f"Found {len(facturas)} invoices")
+
+    if len(facturas) == 0:
+        logger.error("No invoices found in unified XML")
+        return []
+
+    # Use first invoice as template
+    first_match = facturas[0]
+    first_factura_content = first_match.group(1)
+    decoded_first = unescape_xml(first_factura_content.strip())
+
+    # Extract comprobante from first invoice
+    comprobante_match = re.search(r'<comprobante><!\[CDATA\[(.*?)\]\]></comprobante>', decoded_first, re.DOTALL)
+    if not comprobante_match:
+        logger.error("No comprobante found in first invoice")
+        return []
+
+    template_xml = comprobante_match.group(1)
+    logger.info("Using first invoice as template")
+
+    # Collect all productos from all invoices (already with mapped barcodes and quantities)
+    all_productos = []
+
+    for barcode, data in codigo_map.items():
+        producto_xml = f'''    <detalle>
+      <codigoPrincipal>{barcode}</codigoPrincipal>
+      <codigoAuxiliar>{barcode}</codigoAuxiliar>
+      <descripcion>Producto {barcode}</descripcion>
+      <cantidad>{data['cantidad']}</cantidad>
+      <precioUnitario>0.00</precioUnitario>
+      <descuento>0.00</descuento>
+      <precioTotalSinImpuesto>0.00</precioTotalSinImpuesto>
+      <impuestos>
+        <impuesto>
+          <codigo>2</codigo>
+          <codigoPorcentaje>4</codigoPorcentaje>
+          <tarifa>15.00</tarifa>
+          <baseImponible>0.00</baseImponible>
+          <valor>0.00</valor>
+        </impuesto>
+      </impuestos>
+    </detalle>'''
+        all_productos.append(producto_xml)
+
+    logger.info(f"Created {len(all_productos)} consolidated products")
+
+    # Build new detalles section
+    new_detalles = '\n'.join(all_productos)
+
+    # Replace detalles section in template
+    # First, remove all existing detalle elements
+    inner_xml = re.sub(r'<detalle>.*?</detalle>', '', template_xml, flags=re.DOTALL)
+
+    # Find detalles wrapper and replace its content
+    inner_xml = re.sub(
+        r'(<detalles>).*?(</detalles>)',
+        r'\1\n' + new_detalles + '\n  \\2',
+        inner_xml,
+        flags=re.DOTALL
+    )
+
+    # Update invoice metadata
+    current_date = datetime.now().strftime('%d/%m/%Y')
+    inner_xml = re.sub(
+        r'<fechaEmision>.*?</fechaEmision>',
+        f'<fechaEmision>{current_date}</fechaEmision>',
+        inner_xml
+    )
+
+    # Update secuencial to CONSOLIDADO
+    inner_xml = re.sub(
+        r'<secuencial>.*?</secuencial>',
+        '<secuencial>CONSOLIDADO</secuencial>',
+        inner_xml
+    )
+
+    # Update numeroAutorizacion to CONSOLIDADO
+    inner_xml = re.sub(
+        r'<numeroAutorizacion>.*?</numeroAutorizacion>',
+        '<numeroAutorizacion>CONSOLIDADO</numeroAutorizacion>',
+        inner_xml
+    )
+
+    inner_xml = re.sub(
+        r'<claveAcceso>.*?</claveAcceso>',
+        '<claveAcceso>CONSOLIDADO</claveAcceso>',
+        inner_xml
+    )
+
+    # Update totals to 0.00 (since we don't have price info)
+    inner_xml = re.sub(
+        r'<totalSinImpuestos>.*?</totalSinImpuestos>',
+        '<totalSinImpuestos>0.00</totalSinImpuestos>',
+        inner_xml
+    )
+
+    inner_xml = re.sub(
+        r'<importeTotal>.*?</importeTotal>',
+        '<importeTotal>0.00</importeTotal>',
+        inner_xml
+    )
+
+    # Reconstruct authorization XML
+    consolidated_xml = f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<autorizacion>
+<estado>AUTORIZADO</estado>
+<numeroAutorizacion>CONSOLIDADO</numeroAutorizacion>
+<fechaAutorizacion>{datetime.now().isoformat()}</fechaAutorizacion>
+<ambiente>PRODUCCIÓN</ambiente>
+<comprobante><![CDATA[{inner_xml}]]></comprobante>
+</autorizacion>'''
+
+    logger.info("Consolidated XML created successfully")
+
+    return [{
+        'filename': 'factura_consolidada.xml',
+        'content': consolidated_xml
+    }]

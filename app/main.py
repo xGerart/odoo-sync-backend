@@ -135,6 +135,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["Content-Disposition"],  # Allow frontend to read Content-Disposition header
 )
 
 # Register exception handlers
