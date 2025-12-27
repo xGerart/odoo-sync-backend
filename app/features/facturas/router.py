@@ -26,7 +26,8 @@ from app.schemas.invoice import (
     PendingInvoiceResponse,
     InvoiceUploadResponse,
     InvoiceSyncResponse,
-    InvoiceHistoryListResponse
+    InvoiceHistoryListResponse,
+    InvoicePreviewResponse
 )
 from .service import FacturaService
 from .schemas import ExtractProductsResponse
@@ -84,6 +85,55 @@ async def upload_invoices(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error uploading invoices: {str(e)}"
+        )
+
+
+@router.post("/preview", response_model=InvoicePreviewResponse)
+async def preview_invoices(
+    xml_files: List[UploadFile] = File(...),
+    current_user: UserInfo = Depends(require_admin)
+):
+    """
+    Preview XML invoices without processing.
+
+    **Requires:** Admin role
+
+    Parses XML files and returns preview of ALL products with BOTH
+    codigo_principal and codigo_auxiliar fields visible. This allows
+    users to see which barcode field contains data before selecting
+    a barcode source.
+
+    Does NOT create any database records - this is a read-only preview.
+
+    **Parameters:**
+    - xml_files: One or more XML files from SRI
+
+    **Returns:**
+    - Preview data for each file with all products
+    """
+    try:
+        # Read all XML files
+        xml_data_list = []
+        for xml_file in xml_files:
+            content = await xml_file.read()
+            xml_data_list.append({
+                'filename': xml_file.filename,
+                'content': content.decode('utf-8')
+            })
+
+        # Generate preview (no DB writes)
+        service = FacturaService()
+        result = service.preview_invoices(xml_data_list)
+
+        return result
+
+    except Exception as e:
+        import traceback
+        print(f"ERROR previewing invoices: {str(e)}")
+        print(traceback.format_exc())
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error previewing invoices: {str(e)}"
         )
 
 

@@ -1,6 +1,7 @@
 """Utils package for facturas processing."""
 from .xml_parser import (
     extract_productos_from_xml,
+    extract_productos_preview_from_xml,
     create_unified_xml,
     update_xml_with_barcodes,
     update_xml_with_barcodes_consolidated
@@ -8,6 +9,7 @@ from .xml_parser import (
 
 __all__ = [
     'extract_productos_from_xml',
+    'extract_productos_preview_from_xml',
     'create_unified_xml',
     'update_xml_with_barcodes',
     'update_xml_with_barcodes_consolidated'

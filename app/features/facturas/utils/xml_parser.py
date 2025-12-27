@@ -90,6 +90,91 @@ def extract_productos_from_xml(xml_content: str, barcode_source: str = 'codigoAu
     return productos
 
 
+def extract_productos_preview_from_xml(xml_content: str) -> List[Dict[str, Any]]:
+    """
+    Extract products from XML factura with BOTH barcode fields for preview.
+
+    Unlike extract_productos_from_xml(), this returns both codigo_principal
+    and codigo_auxiliar without filtering based on barcode_source preference.
+    This allows users to see which field has data before making a selection.
+
+    Args:
+        xml_content: XML string content
+
+    Returns:
+        List of product dictionaries with both barcode fields:
+        {
+            'codigo_principal': str,
+            'codigo_auxiliar': str,
+            'descripcion': str,
+            'cantidad': float,
+            'precio_unitario': Optional[float],
+            'precio_total': Optional[float]
+        }
+    """
+    productos = []
+
+    # Check if content has CDATA section
+    inner_xml = xml_content
+    cdata_start = xml_content.find('<![CDATA[')
+    if cdata_start != -1:
+        cdata_end = xml_content.find(']]>')
+        if cdata_end != -1:
+            inner_xml = xml_content[cdata_start + 9:cdata_end]
+
+    # Find all <detalle> sections using regex
+    detalle_pattern = re.compile(r'<detalle>(.*?)</detalle>', re.DOTALL)
+    detalles = detalle_pattern.findall(inner_xml)
+
+    for detalle_content in detalles:
+        # Extract fields from detalle
+        codigo_principal_match = re.search(r'<codigoPrincipal>(.*?)</codigoPrincipal>', detalle_content)
+        codigo_auxiliar_match = re.search(r'<codigoAuxiliar>(.*?)</codigoAuxiliar>', detalle_content)
+        descripcion_match = re.search(r'<descripcion>(.*?)</descripcion>', detalle_content)
+        cantidad_match = re.search(r'<cantidad>(.*?)</cantidad>', detalle_content)
+        precio_unitario_match = re.search(r'<precioUnitario>(.*?)</precioUnitario>', detalle_content)
+        precio_total_match = re.search(r'<precioTotalSinImpuesto>(.*?)</precioTotalSinImpuesto>', detalle_content)
+
+        if descripcion_match and cantidad_match:
+            # Extract BOTH codes (may be empty strings)
+            codigo_principal = codigo_principal_match.group(1).strip() if codigo_principal_match else ''
+            codigo_auxiliar = codigo_auxiliar_match.group(1).strip() if codigo_auxiliar_match else ''
+
+            descripcion = unescape(descripcion_match.group(1))
+
+            # Replace common HTML entities
+            descripcion = (descripcion
+                          .replace('&ntilde;', 'ñ')
+                          .replace('&Ntilde;', 'Ñ'))
+
+            cantidad = float(cantidad_match.group(1))
+
+            # Extract prices
+            precio_unitario = None
+            precio_total = None
+
+            if precio_unitario_match:
+                precio_unitario = float(precio_unitario_match.group(1))
+
+            if precio_total_match:
+                precio_total = float(precio_total_match.group(1))
+
+            # Calculate unit price if not available but total is
+            if precio_unitario is None and precio_total is not None and cantidad > 0:
+                precio_unitario = precio_total / cantidad
+
+            productos.append({
+                'codigo_principal': codigo_principal,
+                'codigo_auxiliar': codigo_auxiliar,
+                'descripcion': descripcion,
+                'cantidad': cantidad,
+                'precio_unitario': precio_unitario,
+                'precio_total': precio_total
+            })
+
+    return productos
+
+
 def create_unified_xml(xml_files: List[Dict[str, str]]) -> str:
     """
     Create unified XML from multiple factura XMLs.

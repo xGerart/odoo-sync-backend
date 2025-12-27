@@ -143,6 +143,74 @@ class InvoiceSyncResponse(BaseModel):
 
 
 # ============================================================================
+# PREVIEW SCHEMAS
+# ============================================================================
+
+class ProductPreview(BaseModel):
+    """Product preview with both barcode fields visible."""
+    codigo_principal: str
+    codigo_auxiliar: str
+    descripcion: str
+    cantidad: float
+    precio_unitario: Optional[float] = None
+    precio_total: Optional[float] = None
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "codigo_principal": "SKU12345",
+                "codigo_auxiliar": "7501234567890",
+                "descripcion": "Producto de ejemplo",
+                "cantidad": 100.0,
+                "precio_unitario": 5.50,
+                "precio_total": 550.00
+            }
+        }
+
+
+class InvoicePreview(BaseModel):
+    """Preview data for a single XML file."""
+    filename: str
+    invoice_number: Optional[str] = None
+    supplier_name: Optional[str] = None
+    invoice_date: Optional[datetime] = None
+    products: List[ProductPreview]
+    total_products: int
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "filename": "factura_001.xml",
+                "invoice_number": "001-001-000123456",
+                "supplier_name": "Proveedor SA",
+                "invoice_date": "2025-01-15T10:30:00",
+                "products": [],
+                "total_products": 100
+            }
+        }
+
+
+class InvoicePreviewResponse(BaseModel):
+    """Response containing preview for all uploaded files."""
+    success: bool
+    message: str
+    previews: List[InvoicePreview]
+    total_files: int
+    total_products: int
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "success": True,
+                "message": "Preview generated for 2 file(s)",
+                "previews": [],
+                "total_files": 2,
+                "total_products": 250
+            }
+        }
+
+
+# ============================================================================
 # HISTORY SCHEMAS
 # ============================================================================
 

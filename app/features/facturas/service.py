@@ -28,11 +28,14 @@ from app.schemas.invoice import (
     InvoiceSyncResponse,
     InvoiceHistoryListResponse,
     InvoiceHistoryResponse,
-    InvoiceHistoryItemResponse
+    InvoiceHistoryItemResponse,
+    ProductPreview,
+    InvoicePreview,
+    InvoicePreviewResponse
 )
 from app.core.constants import UserRole, OdooModel
 from app.utils.timezone import get_ecuador_now
-from .utils import extract_productos_from_xml, create_unified_xml, update_xml_with_barcodes, update_xml_with_barcodes_consolidated
+from .utils import extract_productos_from_xml, extract_productos_preview_from_xml, create_unified_xml, update_xml_with_barcodes, update_xml_with_barcodes_consolidated
 
 
 logger = logging.getLogger(__name__)
@@ -138,6 +141,74 @@ class FacturaService:
             message=f"Successfully created {len(invoice_ids)} pending invoices",
             invoices_created=len(invoice_ids),
             invoice_ids=invoice_ids,
+            total_products=total_products
+        )
+
+    def preview_invoices(
+        self,
+        xml_files: List[Dict[str, str]]
+    ) -> InvoicePreviewResponse:
+        """
+        Preview XML invoices without creating database records.
+
+        Extracts all products with BOTH barcode fields visible for user decision.
+        Does NOT write to database - this is a read-only preview operation.
+
+        Args:
+            xml_files: List of dicts with 'filename' and 'content'
+
+        Returns:
+            InvoicePreviewResponse with all products from all files
+        """
+        previews = []
+        total_products = 0
+
+        for xml_data in xml_files:
+            try:
+                filename = xml_data['filename']
+                content = xml_data['content']
+
+                # Extract products with BOTH barcode fields
+                productos = extract_productos_preview_from_xml(content)
+
+                # Extract invoice metadata
+                metadata = self._extract_invoice_metadata(content)
+
+                # Build preview object
+                preview = InvoicePreview(
+                    filename=filename,
+                    invoice_number=metadata.get('invoice_number'),
+                    supplier_name=metadata.get('supplier_name'),
+                    invoice_date=metadata.get('invoice_date'),
+                    products=[
+                        ProductPreview(
+                            codigo_principal=p['codigo_principal'],
+                            codigo_auxiliar=p['codigo_auxiliar'],
+                            descripcion=p['descripcion'],
+                            cantidad=p['cantidad'],
+                            precio_unitario=p.get('precio_unitario'),
+                            precio_total=p.get('precio_total')
+                        )
+                        for p in productos
+                    ],
+                    total_products=len(productos)
+                )
+
+                previews.append(preview)
+                total_products += len(productos)
+
+                logger.info(f"Preview generated for {filename} with {len(productos)} products")
+
+            except Exception as e:
+                logger.error(f"Error previewing {xml_data.get('filename', 'unknown')}: {str(e)}")
+                # Continue with other files
+                continue
+
+        return InvoicePreviewResponse(
+            success=True,
+            message=f"Preview generated for {len(previews)} file(s)",
+            previews=previews,
+            total_files=len(previews),
             total_products=total_products
         )
 
