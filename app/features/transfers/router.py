@@ -14,7 +14,10 @@ from app.schemas.transfer import (
     PendingTransferListResponse,
     PendingTransferResponse,
     TransferHistoryResponse,
-    TransferHistoryListResponse
+    TransferHistoryListResponse,
+    TransferHistoryProductSearchResponse,
+    TransferHistorySearchResult,
+    ProductMatchInfo
 )
 from app.schemas.auth import UserInfo
 from app.features.auth.dependencies import (
@@ -864,4 +867,156 @@ def download_transfer_pdf(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to download PDF: {str(e)}"
+        )
+
+
+@router.get("/history/search/products", response_model=TransferHistoryProductSearchResponse)
+def search_product_in_transfers(
+    search_query: str,
+    search_type: str = "barcode",
+    status_filter: str = None,
+    db: Session = Depends(get_db),
+    current_user: UserInfo = Depends(get_current_user)
+):
+    """
+    Search for a product in transfer history.
+
+    **Requires:** Any authenticated user
+
+    Searches for products by barcode or name in transfer history and returns
+    all transfers that contain the matched product.
+
+    **Access control:**
+    - Admin: Sees all transfers
+    - Bodeguero/Cajero: Only see their own transfers
+
+    Query parameters:
+    - **search_query**: Product barcode or name to search (minimum 2 characters)
+    - **search_type**: Type of search - "barcode", "name", or "both" (default: "barcode")
+    - **status_filter**: Optional filter by status (COMPLETED, PENDING, etc.)
+
+    Returns:
+    - List of transfers containing the product
+    - Total count of matching transfers
+    - Search query and type used
+    """
+    import logging
+    from sqlalchemy import or_
+    from sqlalchemy.orm import joinedload
+    from app.models.transfer_history import TransferHistory, TransferHistoryItem
+
+    logger = logging.getLogger(__name__)
+
+    try:
+        # Validate search query length
+        if len(search_query) < 2:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Search query must be at least 2 characters"
+            )
+
+        # Validate search_type
+        if search_type not in ["barcode", "name", "both"]:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="search_type must be 'barcode', 'name', or 'both'"
+            )
+
+        # Build query: join TransferHistory with TransferHistoryItem
+        query = db.query(TransferHistory, TransferHistoryItem).join(
+            TransferHistoryItem,
+            TransferHistory.id == TransferHistoryItem.history_id
+        )
+
+        # Apply search filter
+        search_pattern = f"%{search_query}%"
+        if search_type == "barcode":
+            query = query.filter(TransferHistoryItem.barcode.ilike(search_pattern))
+        elif search_type == "name":
+            query = query.filter(TransferHistoryItem.product_name.ilike(search_pattern))
+        elif search_type == "both":
+            query = query.filter(
+                or_(
+                    TransferHistoryItem.barcode.ilike(search_pattern),
+                    TransferHistoryItem.product_name.ilike(search_pattern)
+                )
+            )
+
+        # Apply permission filter: admin sees all, others only their own
+        if current_user.role.value != 'admin':
+            query = query.filter(TransferHistory.executed_by == current_user.username)
+
+        # Apply status filter if provided
+        # Note: TransferHistory records are always "COMPLETED" status
+        # We're filtering on the history table which only has completed transfers
+        if status_filter and status_filter != "COMPLETED":
+            # If filtering for non-COMPLETED statuses, return empty results
+            # as TransferHistory only stores completed transfers
+            return TransferHistoryProductSearchResponse(
+                results=[],
+                total=0,
+                search_query=search_query,
+                search_type=search_type
+            )
+
+        # Order by most recent first and limit to 500 results
+        query = query.order_by(TransferHistory.executed_at.desc()).limit(500)
+
+        # Execute query
+        results = query.all()
+
+        # Build response: group by transfer_history and include matched product info
+        transfers_dict = {}
+        for history, item in results:
+            if history.id not in transfers_dict:
+                transfers_dict[history.id] = {
+                    "history": history,
+                    "matched_item": item
+                }
+
+        # Convert to response format
+        search_results = []
+        for transfer_data in transfers_dict.values():
+            history = transfer_data["history"]
+            matched_item = transfer_data["matched_item"]
+
+            search_results.append(
+                TransferHistorySearchResult(
+                    id=history.id,
+                    status="COMPLETED",
+                    executed_by=history.executed_by,
+                    executed_at=history.executed_at,
+                    destination_location_name=history.destination_location_name,
+                    destination_location_id=history.destination_location_id,
+                    total_items=history.total_items,
+                    successful_items=history.successful_items,
+                    failed_items=history.failed_items,
+                    has_errors=history.has_errors,
+                    pdf_filename=history.pdf_filename,
+                    matched_product=ProductMatchInfo(
+                        barcode=matched_item.barcode,
+                        product_name=matched_item.product_name,
+                        quantity_requested=matched_item.quantity_requested,
+                        quantity_transferred=matched_item.quantity_transferred,
+                        success=matched_item.success
+                    )
+                )
+            )
+
+        logger.info(f"Product search for '{search_query}' ({search_type}): found {len(search_results)} transfers")
+
+        return TransferHistoryProductSearchResponse(
+            results=search_results,
+            total=len(search_results),
+            search_query=search_query,
+            search_type=search_type
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error searching products in transfers: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to search products: {str(e)}"
         )

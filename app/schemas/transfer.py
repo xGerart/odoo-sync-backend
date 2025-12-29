@@ -291,3 +291,57 @@ class TransferHistoryListResponse(BaseModel):
                 "total": 0
             }
         }
+
+
+# Product Search Schemas
+
+class ProductMatchInfo(BaseModel):
+    """Information about the product found in the transfer."""
+    barcode: str
+    product_name: str
+    quantity_requested: int
+    quantity_transferred: int
+    success: bool
+
+    class Config:
+        from_attributes = True
+
+
+class TransferHistorySearchResult(BaseModel):
+    """Transfer with information about the matched product."""
+    # Transfer fields
+    id: int
+    status: str
+    executed_by: str
+    executed_at: datetime
+    destination_location_name: str
+    destination_location_id: str
+    total_items: int
+    successful_items: int
+    failed_items: int
+    has_errors: bool
+    pdf_filename: Optional[str] = None
+
+    # Matched product information
+    matched_product: ProductMatchInfo
+
+    class Config:
+        from_attributes = True
+
+
+class TransferHistoryProductSearchResponse(BaseModel):
+    """Response from product search in transfer history."""
+    results: List[TransferHistorySearchResult]
+    total: int
+    search_query: str
+    search_type: str
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "results": [],
+                "total": 0,
+                "search_query": "ABC123",
+                "search_type": "barcode"
+            }
+        }
