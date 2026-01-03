@@ -2,8 +2,11 @@
 Product service for syncing products with Odoo.
 Handles product CRUD, stock management, and XML sync operations.
 """
+import logging
 from typing import List, Dict, Any, Optional
 from sqlalchemy.orm import Session
+
+logger = logging.getLogger(__name__)
 from app.infrastructure.odoo import OdooClient
 from app.schemas.product import (
     ProductData,
@@ -101,20 +104,15 @@ class ProductService:
         Raises:
             ValidationError: If barcode is invalid
         """
-        import logging
-        logger = logging.getLogger(__name__)
-
-        logger.info(f"[SERVICE] Validating barcode: {barcode}")
         if not validate_barcode(barcode):
             raise ValidationError("Invalid barcode format", field="barcode")
 
         try:
-            # Search in product.product first (case-insensitive)
-            logger.info(f"[SERVICE] Searching in Odoo for barcode: {barcode}")
+            # Search in product.product (case-insensitive)
             products = self.client.search_read(
                 OdooModel.PRODUCT_PRODUCT,
                 domain=[
-                    ['barcode', '=ilike', barcode],  # Case-insensitive search
+                    ['barcode', '=ilike', barcode],
                     ['active', '=', True],
                     ['available_in_pos', '=', True]
                 ],
@@ -122,21 +120,10 @@ class ProductService:
                         'list_price', 'tracking', 'available_in_pos', 'image_1920']
             )
 
-            logger.info(f"[SERVICE] Found {len(products)} products")
-
             if products:
                 product = products[0]
-                # Log product data without image to avoid cluttering logs
-                product_log = {k: v for k, v in product.items() if k != 'image_1920'}
-                product_log['image_1920'] = '...' if product.get('image_1920') else None
-                logger.info(f"[SERVICE] Product data: {product_log}")
-
-                # Calculate display price with IVA
-                logger.info(f"[SERVICE] Calculating display price from list_price: {product['list_price']}")
                 display_price = calculate_price_with_iva(product['list_price'])
-                logger.info(f"[SERVICE] Display price calculated: {display_price}")
 
-                logger.info("[SERVICE] Creating ProductResponse...")
                 return ProductResponse(
                     id=product['id'],
                     name=product['name'],
@@ -147,16 +134,12 @@ class ProductService:
                     display_price=display_price,
                     tracking=product.get('tracking'),
                     available_in_pos=product.get('available_in_pos', False),
-                    image_1920=product.get('image_1920') or None  # Odoo returns False when no image
+                    image_1920=product.get('image_1920') or None
                 )
 
-            logger.info("[SERVICE] No products found, returning None")
             return None
 
         except Exception as e:
-            logger.error(f"[SERVICE] Error in search_product_by_barcode: {str(e)}")
-            import traceback
-            logger.error(f"[SERVICE] Traceback: {traceback.format_exc()}")
             raise OdooOperationError(
                 operation="search_product",
                 message=str(e)
@@ -338,7 +321,7 @@ class ProductService:
             current = self.client.read(
                 OdooModel.PRODUCT_PRODUCT,
                 [product_id],
-                fields=['list_price', 'name']
+                fields=['list_price']
             )
 
             if not current:
@@ -390,6 +373,7 @@ class ProductService:
             )
 
         except Exception as e:
+            logger.error(f"Error updating product {product_id}: {str(e)}", exc_info=True)
             return SyncResult(
                 success=False,
                 message=f"Failed to update product: {str(e)}",
