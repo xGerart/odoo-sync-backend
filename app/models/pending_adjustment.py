@@ -124,7 +124,7 @@ class PendingAdjustmentItem(Base):
     description = Column(Text, nullable=True)
     unit_price = Column(Float, nullable=True)
     new_product_name = Column(String(255), nullable=True)  # For ADJUSTMENT type: new name
-    photo_url = Column(String(500), nullable=True)  # For ADJUSTMENT type: photo URL
+    photo_url = Column(Text, nullable=True)  # For ADJUSTMENT type: photo URL (base64 images)
 
     # Relationship to adjustment
     adjustment = relationship("PendingAdjustment", back_populates="items")
