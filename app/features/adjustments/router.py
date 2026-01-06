@@ -459,9 +459,16 @@ def get_unified_adjustment_history(
         if not status_filter or status_filter == 'confirmed':
             history_query = db.query(AdjustmentHistory)
 
-            # Filter by role
+            # Filter by role - bodegueros see their own confirmed adjustments
             if current_user.role.value != 'admin':
-                history_query = history_query.filter(AdjustmentHistory.executed_by == current_user.username)
+                # Bodeguero: Show adjustments they executed OR that were created from their pending adjustments
+                history_query = history_query.outerjoin(
+                    PendingAdjustment,
+                    AdjustmentHistory.pending_adjustment_id == PendingAdjustment.id
+                ).filter(
+                    (AdjustmentHistory.executed_by == current_user.username) |
+                    (PendingAdjustment.username == current_user.username)
+                )
 
             # Apply filters
             if executed_by and current_user.role.value == 'admin':
