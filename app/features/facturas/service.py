@@ -901,7 +901,7 @@ class FacturaService:
                 sale_price_for_history = item.manual_sale_price
             else:
                 # Calculate automatic price (same logic as transform method)
-                from app.features.facturas.utils import apply_profit_margin, round_to_half_dollar
+                from app.utils.formatters import apply_profit_margin, round_to_half_dollar
                 price_with_margin = apply_profit_margin(item.unit_price, pending_invoice.profit_margin)
                 sale_price_for_history = round_to_half_dollar(price_with_margin)
 
