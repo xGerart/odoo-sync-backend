@@ -410,6 +410,132 @@ class FacturaService:
 
         return self._item_to_response(item, user)
 
+    def admin_update_invoice_item(
+        self,
+        invoice_id: int,
+        item_id: int,
+        quantity: Optional[float],
+        barcode: Optional[str],
+        product_name: Optional[str],
+        user: UserInfo
+    ) -> InvoiceItemResponse:
+        """
+        Admin updates invoice item (can edit quantity, barcode, and product name).
+
+        Args:
+            invoice_id: Invoice ID
+            item_id: Item ID
+            quantity: New quantity (optional)
+            barcode: New barcode (optional)
+            product_name: New product name (optional)
+            user: Current user (must be admin)
+
+        Returns:
+            Updated item
+        """
+        if not self.db:
+            raise ValueError("Database session required")
+
+        # Verify user is admin
+        if user.role != UserRole.ADMIN:
+            raise ValueError("Only admins can use this endpoint")
+
+        # Get invoice
+        invoice = self.db.query(PendingInvoice).filter(
+            PendingInvoice.id == invoice_id
+        ).first()
+
+        if not invoice:
+            raise ValueError(f"Invoice {invoice_id} not found")
+
+        # Verify status
+        if invoice.status not in [InvoiceStatus.CORREGIDA, InvoiceStatus.PARCIALMENTE_SINCRONIZADA]:
+            raise ValueError(f"Cannot update items for invoice in status {invoice.status}")
+
+        # Get item
+        item = self.db.query(PendingInvoiceItem).filter(
+            PendingInvoiceItem.id == item_id,
+            PendingInvoiceItem.invoice_id == invoice_id
+        ).first()
+
+        if not item:
+            raise ValueError(f"Item {item_id} not found in invoice {invoice_id}")
+
+        # Update fields if provided
+        if quantity is not None:
+            item.quantity = quantity
+
+        if barcode is not None:
+            item.barcode = barcode if barcode.strip() else None
+
+        if product_name is not None:
+            item.product_name = product_name
+
+        self.db.commit()
+
+        logger.info(f"Admin {user.username} updated item {item_id} in invoice {invoice_id}: qty={quantity}, barcode={barcode}, name={product_name}")
+
+        return self._item_to_response(item, user)
+
+    def exclude_invoice_item(
+        self,
+        invoice_id: int,
+        item_id: int,
+        is_excluded: bool,
+        reason: Optional[str],
+        user: UserInfo
+    ) -> InvoiceItemResponse:
+        """
+        Exclude or include an item from sync (admin only).
+
+        Args:
+            invoice_id: Invoice ID
+            item_id: Item ID
+            is_excluded: True to exclude, False to include
+            reason: Optional reason for exclusion
+            user: Current user (must be admin)
+
+        Returns:
+            Updated item
+        """
+        if not self.db:
+            raise ValueError("Database session required")
+
+        # Verify user is admin
+        if user.role != UserRole.ADMIN:
+            raise ValueError("Only admins can exclude items")
+
+        # Get invoice
+        invoice = self.db.query(PendingInvoice).filter(
+            PendingInvoice.id == invoice_id
+        ).first()
+
+        if not invoice:
+            raise ValueError(f"Invoice {invoice_id} not found")
+
+        # Verify status
+        if invoice.status not in [InvoiceStatus.CORREGIDA, InvoiceStatus.PARCIALMENTE_SINCRONIZADA]:
+            raise ValueError(f"Cannot exclude items for invoice in status {invoice.status}")
+
+        # Get item
+        item = self.db.query(PendingInvoiceItem).filter(
+            PendingInvoiceItem.id == item_id,
+            PendingInvoiceItem.invoice_id == invoice_id
+        ).first()
+
+        if not item:
+            raise ValueError(f"Item {item_id} not found in invoice {invoice_id}")
+
+        # Update exclusion
+        item.is_excluded = is_excluded
+        item.excluded_reason = reason if is_excluded else None
+
+        self.db.commit()
+
+        logger.info(f"Admin {user.username} {'excluded' if is_excluded else 'included'} item {item_id} in invoice {invoice_id}: {reason}")
+
+        return self._item_to_response(item, user)
+
     def submit_invoice(
         self,
         invoice_id: int,
@@ -481,10 +607,13 @@ class FacturaService:
             round_to_half_dollar
         )
 
+        # 0. Filter out excluded items (they should not be synced)
+        items_to_process = [item for item in items if not item.is_excluded]
+
         # 1. Consolidate items by barcode (like xml_parser.py:366-454)
         consolidated = {}
 
-        for item in items:
+        for item in items_to_process:
             if not item.barcode:
                 continue
 
@@ -895,6 +1024,13 @@ class FacturaService:
 
         # Create history items
         for item in pending_invoice.items:
+            # Calculate the correct unit price from total/quantity (same logic as xml_parser)
+            correct_unit_price = (
+                item.total_price / item.quantity
+                if item.total_price and item.quantity > 0
+                else item.unit_price
+            )
+
             # Calculate the sale price that was synced to Odoo
             if item.manual_sale_price is not None:
                 # Manual price was set
@@ -902,7 +1038,7 @@ class FacturaService:
             else:
                 # Calculate automatic price (same logic as transform method)
                 from app.utils.formatters import apply_profit_margin, round_to_half_dollar
-                price_with_margin = apply_profit_margin(item.unit_price, pending_invoice.profit_margin)
+                price_with_margin = apply_profit_margin(correct_unit_price, pending_invoice.profit_margin)
                 sale_price_for_history = round_to_half_dollar(price_with_margin)
 
             history_item = InvoiceHistoryItem(
@@ -912,7 +1048,7 @@ class FacturaService:
                 product_id=item.product_id,
                 product_name=item.product_name,
                 quantity=item.quantity,
-                unit_price=item.unit_price,
+                unit_price=correct_unit_price,
                 sale_price=sale_price_for_history,
                 total_value=item.total_price,
                 success=item.sync_success or False,
@@ -928,8 +1064,12 @@ class FacturaService:
         invoice: PendingInvoice,
         user: UserInfo
     ) -> PendingInvoiceResponse:
-        """Convert invoice to response with price filtering."""
-        items = [self._item_to_response(item, user) for item in invoice.items]
+        """Convert invoice to response with price filtering and consolidation for admin."""
+        # For admin, consolidate items by barcode to show unified view
+        if user.role == UserRole.ADMIN:
+            items = self._consolidate_items_for_admin(invoice.items, user)
+        else:
+            items = [self._item_to_response(item, user) for item in invoice.items]
 
         return PendingInvoiceResponse(
             id=invoice.id,
@@ -939,15 +1079,151 @@ class FacturaService:
             status=invoice.status.value if isinstance(invoice.status, InvoiceStatus) else invoice.status,
             uploaded_by_username=invoice.uploaded_by_username,
             xml_filename=invoice.xml_filename,
+            barcode_source=invoice.barcode_source,
             created_at=invoice.created_at,
             updated_at=invoice.updated_at,
             submitted_at=invoice.submitted_at,
             submitted_by=invoice.submitted_by,
             notes=invoice.notes,
+            profit_margin=invoice.profit_margin,
+            apply_iva=invoice.apply_iva,
+            quantity_mode=invoice.quantity_mode,
             items=items,
             total_items=len(items),
-            total_quantity=sum(item.quantity for item in invoice.items)
+            total_quantity=sum(item.quantity for item in items)
         )
+
+    def _consolidate_items_for_admin(
+        self,
+        items: List[PendingInvoiceItem],
+        user: UserInfo
+    ) -> List[InvoiceItemResponse]:
+        """
+        Consolidate items by barcode for admin view.
+        Items with the same barcode are merged: quantities and totals are summed,
+        unit_price is recalculated from total/quantity.
+        Excluded items are NOT consolidated - they appear separately.
+        """
+        # Separate excluded items (they should appear individually)
+        excluded_items = [item for item in items if item.is_excluded]
+        active_items = [item for item in items if not item.is_excluded]
+
+        # Group active items by barcode (or codigo_original if no barcode)
+        consolidated = {}
+
+        for item in active_items:
+            # Use barcode as key, or codigo_original if no barcode assigned
+            key = item.barcode if item.barcode else f"_no_barcode_{item.codigo_original}"
+
+            if key not in consolidated:
+                consolidated[key] = {
+                    'items': [],
+                    'total_quantity': 0.0,
+                    'total_cantidad_original': 0.0,
+                    'total_price': 0.0,
+                    'source_item_ids': [],
+                    'first_item': item,
+                    'any_modified': False,
+                    'all_synced': True,
+                    'any_failed': False,
+                    'sync_errors': [],
+                    'manual_sale_prices': [],
+                    'product_ids': set()
+                }
+
+            data = consolidated[key]
+            data['items'].append(item)
+            data['total_quantity'] += item.quantity
+            data['total_cantidad_original'] += item.cantidad_original
+            data['total_price'] += item.total_price if item.total_price else 0.0
+            data['source_item_ids'].append(item.id)
+
+            if item.modified_by_bodeguero:
+                data['any_modified'] = True
+
+            # Track sync status
+            if item.sync_success is None:
+                data['all_synced'] = False
+            elif item.sync_success is False:
+                data['any_failed'] = True
+                data['all_synced'] = False
+                if item.sync_error:
+                    data['sync_errors'].append(item.sync_error)
+
+            if item.product_id:
+                data['product_ids'].add(item.product_id)
+
+            if item.manual_sale_price is not None:
+                data['manual_sale_prices'].append(item.manual_sale_price)
+
+        # Convert consolidated data to response items
+        result = []
+
+        # First add excluded items (they appear at the top for visibility)
+        for item in excluded_items:
+            result.append(InvoiceItemResponse(
+                id=item.id,
+                codigo_original=item.codigo_original,
+                product_name=item.product_name,
+                quantity=item.quantity,
+                cantidad_original=item.cantidad_original,
+                barcode=item.barcode,
+                modified_by_bodeguero=item.modified_by_bodeguero,
+                unit_price=item.unit_price,
+                total_price=item.total_price,
+                manual_sale_price=item.manual_sale_price,
+                is_excluded=True,
+                excluded_reason=item.excluded_reason,
+                sync_success=item.sync_success,
+                sync_error=item.sync_error,
+                product_id=item.product_id,
+                source_item_ids=None
+            ))
+
+        # Then add consolidated active items
+        for key, data in consolidated.items():
+            first_item = data['first_item']
+            total_qty = data['total_quantity']
+            total_price = data['total_price']
+
+            # Calculate unit price from total/quantity (source of truth)
+            unit_price = total_price / total_qty if total_qty > 0 and total_price > 0 else first_item.unit_price
+
+            # Determine sync status for consolidated item
+            if data['all_synced'] and len(data['items']) > 0 and all(i.sync_success for i in data['items']):
+                sync_success = True
+            elif data['any_failed']:
+                sync_success = False
+            else:
+                sync_success = None
+
+            # Get manual sale price (use first one if all are the same)
+            manual_prices = data['manual_sale_prices']
+            if manual_prices and all(p == manual_prices[0] for p in manual_prices):
+                manual_sale_price = manual_prices[0]
+            else:
+                manual_sale_price = None
+
+            result.append(InvoiceItemResponse(
+                id=first_item.id,  # Use first item's ID as reference
+                codigo_original=first_item.codigo_original,
+                product_name=first_item.product_name,
+                quantity=total_qty,
+                cantidad_original=data['total_cantidad_original'],
+                barcode=first_item.barcode,
+                modified_by_bodeguero=data['any_modified'],
+                unit_price=unit_price,
+                total_price=total_price if total_price > 0 else None,
+                manual_sale_price=manual_sale_price,
+                is_excluded=False,
+                excluded_reason=None,
+                sync_success=sync_success,
+                sync_error="; ".join(data['sync_errors']) if data['sync_errors'] else None,
+                product_id=list(data['product_ids'])[0] if data['product_ids'] else None,
+                source_item_ids=data['source_item_ids'] if len(data['source_item_ids']) > 1 else None
+            ))
+
+        return result
 
     def _item_to_response(
         self,
@@ -971,6 +1247,8 @@ class FacturaService:
             unit_price=unit_price,
             total_price=total_price,
             manual_sale_price=manual_sale_price,
+            is_excluded=item.is_excluded,
+            excluded_reason=item.excluded_reason,
             sync_success=item.sync_success,
             sync_error=item.sync_error,
             product_id=item.product_id

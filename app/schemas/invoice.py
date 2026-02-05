@@ -37,6 +37,36 @@ class InvoiceItemSalePriceUpdateRequest(BaseModel):
         }
 
 
+class AdminItemUpdateRequest(BaseModel):
+    """Request for admin to update invoice item (can edit all fields)."""
+    quantity: Optional[float] = Field(None, gt=0, description="Quantity in units")
+    barcode: Optional[str] = Field(None, description="Product barcode")
+    product_name: Optional[str] = Field(None, description="Product name (admin only)")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "quantity": 120,
+                "barcode": "7501234567890",
+                "product_name": "Producto Corregido"
+            }
+        }
+
+
+class ItemExcludeRequest(BaseModel):
+    """Request to exclude/include item from sync (admin only)."""
+    is_excluded: bool = Field(..., description="True to exclude, False to include")
+    reason: Optional[str] = Field(None, max_length=255, description="Reason for exclusion")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "is_excluded": True,
+                "reason": "No es para venta - servicio de transporte"
+            }
+        }
+
+
 class InvoiceSubmitRequest(BaseModel):
     """Request to submit invoice as completed (bodeguero)."""
     notes: Optional[str] = Field(None, description="Optional notes or comments")
@@ -80,10 +110,15 @@ class InvoiceItemResponse(BaseModel):
     unit_price: Optional[float] = None
     total_price: Optional[float] = None
     manual_sale_price: Optional[float] = None
+    # Exclusion fields (admin can exclude items like "TRANSPORTE")
+    is_excluded: bool = False
+    excluded_reason: Optional[str] = None
     # Sync status fields
     sync_success: Optional[bool] = None
     sync_error: Optional[str] = None
     product_id: Optional[int] = None
+    # For consolidated items: list of original item IDs that were merged
+    source_item_ids: Optional[List[int]] = None
 
     class Config:
         from_attributes = True

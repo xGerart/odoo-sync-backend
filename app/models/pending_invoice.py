@@ -139,6 +139,10 @@ class PendingInvoiceItem(Base):
     # Tracking
     modified_by_bodeguero = Column(Boolean, default=False, nullable=False)
 
+    # Exclusion (admin can exclude items like "TRANSPORTE" from sync)
+    is_excluded = Column(Boolean, default=False, nullable=False)
+    excluded_reason = Column(String(255), nullable=True)
+
     # Odoo sync results
     product_id = Column(Integer, nullable=True)  # Odoo product ID after sync
     sync_success = Column(Boolean, nullable=True)
@@ -164,6 +168,8 @@ class PendingInvoiceItem(Base):
             "total_price": self.total_price,
             "manual_sale_price": self.manual_sale_price,
             "modified_by_bodeguero": self.modified_by_bodeguero,
+            "is_excluded": self.is_excluded,
+            "excluded_reason": self.excluded_reason,
             "product_id": self.product_id,
             "sync_success": self.sync_success,
             "sync_error": self.sync_error

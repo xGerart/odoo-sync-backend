@@ -20,10 +20,13 @@ from app.features.auth.dependencies import (
 from app.schemas.invoice import (
     InvoiceItemUpdateRequest,
     InvoiceItemSalePriceUpdateRequest,
+    AdminItemUpdateRequest,
+    ItemExcludeRequest,
     InvoiceSubmitRequest,
     InvoiceSyncRequest,
     PendingInvoiceListResponse,
     PendingInvoiceResponse,
+    InvoiceItemResponse,
     InvoiceUploadResponse,
     InvoiceSyncResponse,
     InvoiceHistoryListResponse,
@@ -283,6 +286,97 @@ def update_item_sale_price(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error updating sale price: {str(e)}"
+        )
+
+
+@router.patch("/pending/{invoice_id}/items/{item_id}", response_model=InvoiceItemResponse)
+def admin_update_invoice_item(
+    invoice_id: int,
+    item_id: int,
+    request: AdminItemUpdateRequest,
+    db: Session = Depends(get_db),
+    current_user: UserInfo = Depends(require_admin)
+):
+    """
+    Update invoice item (admin only - can edit all fields).
+
+    **Requires:** Admin role
+
+    Allows admin to:
+    - Update quantity
+    - Update barcode
+    - Update product name (to correct errors)
+
+    Invoice must be in CORREGIDA or PARCIALMENTE_SINCRONIZADA status.
+    """
+    try:
+        service = FacturaService(db=db)
+        result = service.admin_update_invoice_item(
+            invoice_id,
+            item_id,
+            quantity=request.quantity,
+            barcode=request.barcode,
+            product_name=request.product_name,
+            user=current_user
+        )
+
+        return result
+
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error updating item: {str(e)}"
+        )
+
+
+@router.patch("/pending/{invoice_id}/items/{item_id}/exclude", response_model=InvoiceItemResponse)
+def exclude_invoice_item(
+    invoice_id: int,
+    item_id: int,
+    request: ItemExcludeRequest,
+    db: Session = Depends(get_db),
+    current_user: UserInfo = Depends(require_admin)
+):
+    """
+    Exclude or include an invoice item from sync (admin only).
+
+    **Requires:** Admin role
+
+    Allows admin to exclude items that are not for sale (e.g., "TRANSPORTE", services).
+    Excluded items will NOT be synced to Odoo but remain visible in the invoice.
+
+    - Set is_excluded=true to exclude the item
+    - Set is_excluded=false to include the item again
+    - Optionally provide a reason for exclusion
+
+    Invoice must be in CORREGIDA or PARCIALMENTE_SINCRONIZADA status.
+    """
+    try:
+        service = FacturaService(db=db)
+        result = service.exclude_invoice_item(
+            invoice_id,
+            item_id,
+            is_excluded=request.is_excluded,
+            reason=request.reason,
+            user=current_user
+        )
+
+        return result
+
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e)
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error excluding item: {str(e)}"
         )
 
 

@@ -69,15 +69,16 @@ def extract_productos_from_xml(xml_content: str, barcode_source: str = 'codigoAu
             precio_unitario = None
             precio_total = None
 
-            if precio_unitario_match:
-                precio_unitario = float(precio_unitario_match.group(1))
-
             if precio_total_match:
                 precio_total = float(precio_total_match.group(1))
 
-            # Calculate unit price if not available but total is
-            if precio_unitario is None and precio_total is not None and cantidad > 0:
+            # Calculate unit price from total (source of truth) when possible
+            # This fixes incorrect precioUnitario values in some XML files
+            if precio_total is not None and cantidad > 0:
                 precio_unitario = precio_total / cantidad
+            elif precio_unitario_match:
+                # Fallback to XML value only if total is not available
+                precio_unitario = float(precio_unitario_match.group(1))
 
             productos.append({
                 'codigo': codigo,
@@ -153,15 +154,16 @@ def extract_productos_preview_from_xml(xml_content: str) -> List[Dict[str, Any]]
             precio_unitario = None
             precio_total = None
 
-            if precio_unitario_match:
-                precio_unitario = float(precio_unitario_match.group(1))
-
             if precio_total_match:
                 precio_total = float(precio_total_match.group(1))
 
-            # Calculate unit price if not available but total is
-            if precio_unitario is None and precio_total is not None and cantidad > 0:
+            # Calculate unit price from total (source of truth) when possible
+            # This fixes incorrect precioUnitario values in some XML files
+            if precio_total is not None and cantidad > 0:
                 precio_unitario = precio_total / cantidad
+            elif precio_unitario_match:
+                # Fallback to XML value only if total is not available
+                precio_unitario = float(precio_unitario_match.group(1))
 
             productos.append({
                 'codigo_principal': codigo_principal,
