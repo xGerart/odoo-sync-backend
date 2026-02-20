@@ -58,6 +58,16 @@ class LocationService:
                 port=settings.ODOO_SUCURSAL_SACHA_PORT
             ))
 
+        # Local Sucursal Lago
+        if settings.ODOO_SUCURSAL_LAGO_URL and settings.ODOO_SUCURSAL_LAGO_DB:
+            locations.append(OdooLocation(
+                id="sucursal_lago",
+                name="Local Sucursal Lago",
+                url=settings.ODOO_SUCURSAL_LAGO_URL,
+                database=settings.ODOO_SUCURSAL_LAGO_DB,
+                port=settings.ODOO_SUCURSAL_LAGO_PORT
+            ))
+
         return locations
 
     @staticmethod

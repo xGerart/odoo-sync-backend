@@ -49,6 +49,11 @@ class Settings(BaseSettings):
     ODOO_SUCURSAL_SACHA_DB: str = ""
     ODOO_SUCURSAL_SACHA_PORT: int = 443
 
+    # Odoo Sucursal Lago
+    ODOO_SUCURSAL_LAGO_URL: str = ""
+    ODOO_SUCURSAL_LAGO_DB: str = ""
+    ODOO_SUCURSAL_LAGO_PORT: int = 443
+
     # Business Rules
     IVA_RATE: float = 0.15
     DEFAULT_PROFIT_MARGIN: float = 0.50
