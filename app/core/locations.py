@@ -62,7 +62,7 @@ class LocationService:
         if settings.ODOO_SUCURSAL_LAGO_URL and settings.ODOO_SUCURSAL_LAGO_DB:
             locations.append(OdooLocation(
                 id="sucursal_lago",
-                name="Local Sucursal Lago",
+                name="Local Sucursal Loreto",
                 url=settings.ODOO_SUCURSAL_LAGO_URL,
                 database=settings.ODOO_SUCURSAL_LAGO_DB,
                 port=settings.ODOO_SUCURSAL_LAGO_PORT
