@@ -317,6 +317,7 @@ def admin_update_invoice_item(
             quantity=request.quantity,
             barcode=request.barcode,
             product_name=request.product_name,
+            source_item_ids=request.source_item_ids,
             user=current_user
         )
 

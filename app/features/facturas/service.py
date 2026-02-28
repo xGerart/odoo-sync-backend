@@ -417,10 +417,12 @@ class FacturaService:
         quantity: Optional[float],
         barcode: Optional[str],
         product_name: Optional[str],
-        user: UserInfo
+        user: UserInfo,
+        source_item_ids: Optional[List[int]] = None
     ) -> InvoiceItemResponse:
         """
         Admin updates invoice item (can edit quantity, barcode, and product name).
+        For consolidated items, updates all source items accordingly.
 
         Args:
             invoice_id: Invoice ID
@@ -429,6 +431,7 @@ class FacturaService:
             barcode: New barcode (optional)
             product_name: New product name (optional)
             user: Current user (must be admin)
+            source_item_ids: IDs of all source items in consolidated group (optional)
 
         Returns:
             Updated item
@@ -452,7 +455,7 @@ class FacturaService:
         if invoice.status not in [InvoiceStatus.CORREGIDA, InvoiceStatus.PARCIALMENTE_SINCRONIZADA]:
             raise ValueError(f"Cannot update items for invoice in status {invoice.status}")
 
-        # Get item
+        # Get the main item
         item = self.db.query(PendingInvoiceItem).filter(
             PendingInvoiceItem.id == item_id,
             PendingInvoiceItem.invoice_id == invoice_id
@@ -461,19 +464,45 @@ class FacturaService:
         if not item:
             raise ValueError(f"Item {item_id} not found in invoice {invoice_id}")
 
-        # Update fields if provided
-        if quantity is not None:
-            item.quantity = quantity
+        # Handle consolidated items: update all source items
+        if source_item_ids and len(source_item_ids) > 1:
+            other_item_ids = [sid for sid in source_item_ids if sid != item_id]
+            other_items = self.db.query(PendingInvoiceItem).filter(
+                PendingInvoiceItem.id.in_(other_item_ids),
+                PendingInvoiceItem.invoice_id == invoice_id
+            ).all()
 
-        if barcode is not None:
-            item.barcode = barcode if barcode.strip() else None
+            # For quantity: set the total on the main item, zero out the others
+            if quantity is not None:
+                item.quantity = quantity
+                for other in other_items:
+                    other.quantity = 0
 
-        if product_name is not None:
-            item.product_name = product_name
+            # For barcode/product_name: apply to all items in the group
+            if barcode is not None:
+                barcode_value = barcode if barcode.strip() else None
+                item.barcode = barcode_value
+                for other in other_items:
+                    other.barcode = barcode_value
+
+            if product_name is not None:
+                item.product_name = product_name
+                for other in other_items:
+                    other.product_name = product_name
+        else:
+            # Single item update
+            if quantity is not None:
+                item.quantity = quantity
+
+            if barcode is not None:
+                item.barcode = barcode if barcode.strip() else None
+
+            if product_name is not None:
+                item.product_name = product_name
 
         self.db.commit()
 
-        logger.info(f"Admin {user.username} updated item {item_id} in invoice {invoice_id}: qty={quantity}, barcode={barcode}, name={product_name}")
+        logger.info(f"Admin {user.username} updated item {item_id} in invoice {invoice_id}: qty={quantity}, barcode={barcode}, name={product_name}, source_ids={source_item_ids}")
 
         return self._item_to_response(item, user)
 

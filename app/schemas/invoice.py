@@ -42,6 +42,7 @@ class AdminItemUpdateRequest(BaseModel):
     quantity: Optional[float] = Field(None, gt=0, description="Quantity in units")
     barcode: Optional[str] = Field(None, description="Product barcode")
     product_name: Optional[str] = Field(None, description="Product name (admin only)")
+    source_item_ids: Optional[List[int]] = Field(None, description="IDs of all source items in a consolidated group")
 
     class Config:
         json_schema_extra = {
