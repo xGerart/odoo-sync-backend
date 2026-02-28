@@ -610,15 +610,17 @@ class FacturaService:
         # 0. Filter out excluded items (they should not be synced)
         items_to_process = [item for item in items if not item.is_excluded]
 
-        # 1. Consolidate items by barcode (like xml_parser.py:366-454)
+        # 1. Consolidate items by codigo_original
+        # Use barcode if assigned, otherwise fall back to codigo_original
+        # (the main code often IS the barcode, workers just don't fill the barcode field)
         consolidated = {}
 
         for item in items_to_process:
-            if not item.barcode:
-                continue
+            # Use barcode if available, otherwise use codigo_original as barcode
+            effective_barcode = item.barcode or item.codigo_original
 
-            if item.barcode not in consolidated:
-                consolidated[item.barcode] = {
+            if effective_barcode not in consolidated:
+                consolidated[effective_barcode] = {
                     'items': [],
                     'total_quantity': 0.0,
                     'total_amount': 0.0,
@@ -629,13 +631,13 @@ class FacturaService:
             # Use total_price if exists, otherwise calculate
             line_total = item.total_price or (item.quantity * item.unit_price)
 
-            consolidated[item.barcode]['items'].append(item)
-            consolidated[item.barcode]['total_quantity'] += item.quantity
-            consolidated[item.barcode]['total_amount'] += line_total
+            consolidated[effective_barcode]['items'].append(item)
+            consolidated[effective_barcode]['total_quantity'] += item.quantity
+            consolidated[effective_barcode]['total_amount'] += line_total
 
             # Track manual sale price if set
             if item.manual_sale_price is not None:
-                consolidated[item.barcode]['manual_sale_prices'].append(item.manual_sale_price)
+                consolidated[effective_barcode]['manual_sale_prices'].append(item.manual_sale_price)
 
         # 2. Calculate real cost and transform to product format
         mapped_products = []
@@ -1064,12 +1066,9 @@ class FacturaService:
         invoice: PendingInvoice,
         user: UserInfo
     ) -> PendingInvoiceResponse:
-        """Convert invoice to response with price filtering and consolidation for admin."""
-        # For admin, consolidate items by barcode to show unified view
-        if user.role == UserRole.ADMIN:
-            items = self._consolidate_items_for_admin(invoice.items, user)
-        else:
-            items = [self._item_to_response(item, user) for item in invoice.items]
+        """Convert invoice to response with price filtering and consolidation."""
+        # Consolidate items by codigo_original for all user roles
+        items = self._consolidate_items(invoice.items, user)
 
         return PendingInvoiceResponse(
             id=invoice.id,
@@ -1093,14 +1092,14 @@ class FacturaService:
             total_quantity=sum(item.quantity for item in items)
         )
 
-    def _consolidate_items_for_admin(
+    def _consolidate_items(
         self,
         items: List[PendingInvoiceItem],
         user: UserInfo
     ) -> List[InvoiceItemResponse]:
         """
-        Consolidate items by barcode for admin view.
-        Items with the same barcode are merged: quantities and totals are summed,
+        Consolidate items by codigo_original for all user views.
+        Items with the same codigo_original are merged: quantities and totals are summed,
         unit_price is recalculated from total/quantity.
         Excluded items are NOT consolidated - they appear separately.
         """
@@ -1108,12 +1107,13 @@ class FacturaService:
         excluded_items = [item for item in items if item.is_excluded]
         active_items = [item for item in items if not item.is_excluded]
 
-        # Group active items by barcode (or codigo_original if no barcode)
+        # Group active items by codigo_original (main product code)
+        # This ensures items with the same product code are unified even if
+        # one has a barcode assigned and another doesn't yet
         consolidated = {}
 
         for item in active_items:
-            # Use barcode as key, or codigo_original if no barcode assigned
-            key = item.barcode if item.barcode else f"_no_barcode_{item.codigo_original}"
+            key = item.codigo_original
 
             if key not in consolidated:
                 consolidated[key] = {
@@ -1123,6 +1123,7 @@ class FacturaService:
                     'total_price': 0.0,
                     'source_item_ids': [],
                     'first_item': item,
+                    'barcode': item.barcode,
                     'any_modified': False,
                     'all_synced': True,
                     'any_failed': False,
@@ -1156,6 +1157,13 @@ class FacturaService:
             if item.manual_sale_price is not None:
                 data['manual_sale_prices'].append(item.manual_sale_price)
 
+            # Track the best barcode (prefer non-None barcode)
+            if item.barcode and not data.get('barcode'):
+                data['barcode'] = item.barcode
+
+        # Filter prices for bodeguero role
+        hide_prices = user.role == UserRole.BODEGUERO
+
         # Convert consolidated data to response items
         result = []
 
@@ -1169,9 +1177,9 @@ class FacturaService:
                 cantidad_original=item.cantidad_original,
                 barcode=item.barcode,
                 modified_by_bodeguero=item.modified_by_bodeguero,
-                unit_price=item.unit_price,
-                total_price=item.total_price,
-                manual_sale_price=item.manual_sale_price,
+                unit_price=None if hide_prices else item.unit_price,
+                total_price=None if hide_prices else item.total_price,
+                manual_sale_price=None if hide_prices else item.manual_sale_price,
                 is_excluded=True,
                 excluded_reason=item.excluded_reason,
                 sync_success=item.sync_success,
@@ -1210,11 +1218,11 @@ class FacturaService:
                 product_name=first_item.product_name,
                 quantity=total_qty,
                 cantidad_original=data['total_cantidad_original'],
-                barcode=first_item.barcode,
+                barcode=data.get('barcode') or first_item.barcode,
                 modified_by_bodeguero=data['any_modified'],
-                unit_price=unit_price,
-                total_price=total_price if total_price > 0 else None,
-                manual_sale_price=manual_sale_price,
+                unit_price=None if hide_prices else unit_price,
+                total_price=None if hide_prices else (total_price if total_price > 0 else None),
+                manual_sale_price=None if hide_prices else manual_sale_price,
                 is_excluded=False,
                 excluded_reason=None,
                 sync_success=sync_success,
