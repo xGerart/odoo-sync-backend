@@ -120,6 +120,9 @@ class InvoiceItemResponse(BaseModel):
     product_id: Optional[int] = None
     # For consolidated items: list of original item IDs that were merged
     source_item_ids: Optional[List[int]] = None
+    # Odoo product info (populated for admin when Odoo is available)
+    odoo_exists: bool = False
+    odoo_list_price: Optional[float] = None
 
     class Config:
         from_attributes = True

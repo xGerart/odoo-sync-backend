@@ -10,6 +10,7 @@ import openpyxl
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
+from app.core.constants import UserRole
 from app.infrastructure.odoo import get_odoo_manager, OdooConnectionManager
 from app.schemas.auth import UserInfo
 from app.features.auth.dependencies import (
@@ -171,7 +172,8 @@ def get_pending_invoices(
 def get_pending_invoice_detail(
     invoice_id: int,
     db: Session = Depends(get_db),
-    current_user: UserInfo = Depends(require_admin_or_bodeguero)
+    current_user: UserInfo = Depends(require_admin_or_bodeguero),
+    manager: OdooConnectionManager = Depends(get_odoo_manager)
 ):
     """
     Get single pending invoice with items.
@@ -179,11 +181,19 @@ def get_pending_invoice_detail(
     **Requires:** Admin or Bodeguero role
 
     Prices are automatically filtered based on role:
-    - Admin: sees all fields including prices
+    - Admin: sees all fields including prices, plus Odoo product existence/price
     - Bodeguero: prices are set to None
     """
     try:
-        service = FacturaService(db=db)
+        # For admin, get Odoo client to lookup product existence and prices
+        odoo_client = None
+        if current_user.role == UserRole.ADMIN:
+            try:
+                odoo_client = manager.get_principal_client()
+            except Exception:
+                pass  # Gracefully degrade if Odoo is unavailable
+
+        service = FacturaService(db=db, odoo_client=odoo_client)
         result = service.get_pending_invoice_by_id(invoice_id, current_user)
 
         if not result:

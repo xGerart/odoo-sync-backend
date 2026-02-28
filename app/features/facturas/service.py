@@ -287,7 +287,7 @@ class FacturaService:
         if not invoice:
             raise ValueError(f"Invoice {invoice_id} not found")
 
-        return self._invoice_to_response(invoice, user)
+        return self._invoice_to_response(invoice, user, odoo_client=self.odoo_client)
 
     def update_invoice_item(
         self,
@@ -1093,11 +1093,33 @@ class FacturaService:
     def _invoice_to_response(
         self,
         invoice: PendingInvoice,
-        user: UserInfo
+        user: UserInfo,
+        odoo_client=None
     ) -> PendingInvoiceResponse:
         """Convert invoice to response with price filtering and consolidation."""
+        # For admin: batch lookup products in Odoo to show existence and current price
+        odoo_lookup = {}
+        if user.role == UserRole.ADMIN and odoo_client:
+            try:
+                barcodes = set()
+                for item in invoice.items:
+                    effective_barcode = item.barcode or item.codigo_original
+                    if effective_barcode:
+                        barcodes.add(effective_barcode)
+
+                if barcodes:
+                    from app.core.constants import OdooModel
+                    products = odoo_client.search_read(
+                        OdooModel.PRODUCT_PRODUCT,
+                        domain=[('barcode', 'in', list(barcodes)), ('active', '=', True)],
+                        fields=['barcode', 'list_price'],
+                    )
+                    odoo_lookup = {p['barcode']: p for p in products if p.get('barcode')}
+            except Exception as e:
+                logger.warning(f"Failed to lookup products in Odoo: {e}")
+
         # Consolidate items by codigo_original for all user roles
-        items = self._consolidate_items(invoice.items, user)
+        items = self._consolidate_items(invoice.items, user, odoo_lookup=odoo_lookup)
 
         return PendingInvoiceResponse(
             id=invoice.id,
@@ -1124,7 +1146,8 @@ class FacturaService:
     def _consolidate_items(
         self,
         items: List[PendingInvoiceItem],
-        user: UserInfo
+        user: UserInfo,
+        odoo_lookup: Optional[Dict] = None
     ) -> List[InvoiceItemResponse]:
         """
         Consolidate items by codigo_original for all user views.
@@ -1192,12 +1215,15 @@ class FacturaService:
 
         # Filter prices for bodeguero role
         hide_prices = user.role == UserRole.BODEGUERO
+        lookup = odoo_lookup or {}
 
         # Convert consolidated data to response items
         result = []
 
         # First add excluded items (they appear at the top for visibility)
         for item in excluded_items:
+            effective_bc = item.barcode or item.codigo_original
+            odoo_product = lookup.get(effective_bc)
             result.append(InvoiceItemResponse(
                 id=item.id,
                 codigo_original=item.codigo_original,
@@ -1214,7 +1240,9 @@ class FacturaService:
                 sync_success=item.sync_success,
                 sync_error=item.sync_error,
                 product_id=item.product_id,
-                source_item_ids=None
+                source_item_ids=None,
+                odoo_exists=bool(odoo_product),
+                odoo_list_price=float(odoo_product['list_price']) if odoo_product else None,
             ))
 
         # Then add consolidated active items
@@ -1241,6 +1269,9 @@ class FacturaService:
             else:
                 manual_sale_price = None
 
+            effective_bc = data.get('barcode') or first_item.barcode or first_item.codigo_original
+            odoo_product = lookup.get(effective_bc)
+
             result.append(InvoiceItemResponse(
                 id=first_item.id,  # Use first item's ID as reference
                 codigo_original=first_item.codigo_original,
@@ -1257,7 +1288,9 @@ class FacturaService:
                 sync_success=sync_success,
                 sync_error="; ".join(data['sync_errors']) if data['sync_errors'] else None,
                 product_id=list(data['product_ids'])[0] if data['product_ids'] else None,
-                source_item_ids=data['source_item_ids'] if len(data['source_item_ids']) > 1 else None
+                source_item_ids=data['source_item_ids'] if len(data['source_item_ids']) > 1 else None,
+                odoo_exists=bool(odoo_product),
+                odoo_list_price=float(odoo_product['list_price']) if odoo_product else None,
             ))
 
         return result
