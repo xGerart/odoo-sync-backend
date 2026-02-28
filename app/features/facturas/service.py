@@ -1242,7 +1242,7 @@ class FacturaService:
                 product_id=item.product_id,
                 source_item_ids=None,
                 odoo_exists=bool(odoo_product),
-                odoo_list_price=float(odoo_product['list_price']) if odoo_product else None,
+                odoo_list_price=round(float(odoo_product['list_price']) * 1.15, 2) if odoo_product else None,
             ))
 
         # Then add consolidated active items
@@ -1290,7 +1290,7 @@ class FacturaService:
                 product_id=list(data['product_ids'])[0] if data['product_ids'] else None,
                 source_item_ids=data['source_item_ids'] if len(data['source_item_ids']) > 1 else None,
                 odoo_exists=bool(odoo_product),
-                odoo_list_price=float(odoo_product['list_price']) if odoo_product else None,
+                odoo_list_price=round(float(odoo_product['list_price']) * 1.15, 2) if odoo_product else None,
             ))
 
         return result
