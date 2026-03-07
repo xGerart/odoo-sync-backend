@@ -639,39 +639,47 @@ class FacturaService:
         # 0. Filter out excluded items (they should not be synced)
         items_to_process = [item for item in items if not item.is_excluded]
 
-        # 1. Consolidate items by codigo_original
-        # Use barcode if assigned, otherwise fall back to codigo_original
-        # (the main code often IS the barcode, workers just don't fill the barcode field)
+        # 1. Consolidate items by codigo_original (same grouping as the UI display)
+        # This prevents creating duplicate products when some items in the group
+        # have a bodeguero barcode and others don't.
+        # After grouping, we pick the best barcode: bodeguero's barcode if any item
+        # has one, otherwise fall back to codigo_original.
         consolidated = {}
 
         for item in items_to_process:
-            # Use barcode if available, otherwise use codigo_original as barcode
-            effective_barcode = item.barcode or item.codigo_original
+            key = item.codigo_original
 
-            if effective_barcode not in consolidated:
-                consolidated[effective_barcode] = {
+            if key not in consolidated:
+                consolidated[key] = {
                     'items': [],
                     'total_quantity': 0.0,
                     'total_amount': 0.0,
                     'name': item.product_name,
-                    'manual_sale_prices': []  # Track manual prices for this barcode
+                    'manual_sale_prices': [],
+                    'barcode': None  # Will be set from bodeguero assignment
                 }
 
             # Use total_price if exists, otherwise calculate
             line_total = item.total_price or (item.quantity * item.unit_price)
 
-            consolidated[effective_barcode]['items'].append(item)
-            consolidated[effective_barcode]['total_quantity'] += item.quantity
-            consolidated[effective_barcode]['total_amount'] += line_total
+            consolidated[key]['items'].append(item)
+            consolidated[key]['total_quantity'] += item.quantity
+            consolidated[key]['total_amount'] += line_total
 
             # Track manual sale price if set
             if item.manual_sale_price is not None:
-                consolidated[effective_barcode]['manual_sale_prices'].append(item.manual_sale_price)
+                consolidated[key]['manual_sale_prices'].append(item.manual_sale_price)
+
+            # Track bodeguero barcode (prefer non-None barcode from any item)
+            if item.barcode and not consolidated[key]['barcode']:
+                consolidated[key]['barcode'] = item.barcode
 
         # 2. Calculate real cost and transform to product format
         mapped_products = []
 
-        for barcode, data in consolidated.items():
+        for codigo_original, data in consolidated.items():
+            # Use bodeguero barcode if assigned, otherwise fall back to codigo_original
+            barcode = data['barcode'] or codigo_original
             # Calculate weighted average unit cost
             if data['total_quantity'] > 0:
                 real_unit_cost = data['total_amount'] / data['total_quantity']
@@ -815,13 +823,20 @@ class FacturaService:
             )
 
             # 4. Update items with sync results
-            # Map barcode -> items for updating
-            items_by_barcode = {}
-            for item in invoice.items:
-                if item.barcode:
-                    if item.barcode not in items_by_barcode:
-                        items_by_barcode[item.barcode] = []
-                    items_by_barcode[item.barcode].append(item)
+            # Build mapping: synced barcode -> codigo_original
+            # During sync, items were consolidated by codigo_original and the
+            # effective barcode was picked (bodeguero barcode or codigo_original).
+            # We need to map the synced barcode back to all items with that codigo_original.
+            barcode_to_codigo = {}
+            items_by_codigo = {}
+            for item in items_to_sync:
+                if item.is_excluded:
+                    continue
+                effective_bc = item.barcode or item.codigo_original
+                barcode_to_codigo[effective_bc] = item.codigo_original
+                if item.codigo_original not in items_by_codigo:
+                    items_by_codigo[item.codigo_original] = []
+                items_by_codigo[item.codigo_original].append(item)
 
             # Update items based on sync results
             errors = []
@@ -829,18 +844,21 @@ class FacturaService:
             failed_items = []
 
             for result in sync_response.results:
-                if result.barcode in items_by_barcode:
-                    for item in items_by_barcode[result.barcode]:
-                        if result.success:
-                            item.product_id = result.product_id
-                            item.sync_success = True
-                            item.sync_error = None
-                            successful_items.append(item)
-                        else:
-                            item.sync_success = False
-                            item.sync_error = result.message
-                            failed_items.append({'item': item, 'error': result.message})
-                            errors.append(f"{item.product_name} ({result.barcode}): {result.message}")
+                # Find the codigo_original that corresponds to this synced barcode
+                codigo = barcode_to_codigo.get(result.barcode)
+                matched_items = items_by_codigo.get(codigo, []) if codigo else []
+
+                for item in matched_items:
+                    if result.success:
+                        item.product_id = result.product_id
+                        item.sync_success = True
+                        item.sync_error = None
+                        successful_items.append(item)
+                    else:
+                        item.sync_success = False
+                        item.sync_error = result.message
+                        failed_items.append({'item': item, 'error': result.message})
+                        errors.append(f"{item.product_name} ({result.barcode}): {result.message}")
 
         except Exception as e:
             logger.error(f"Error syncing invoice {invoice_id}: {str(e)}")
