@@ -37,6 +37,7 @@ from app.features.adjustments.router import router as adjustments_router
 from app.features.sales.router import router as sales_router
 from app.features.inconsistencies.router import router as inconsistencies_router
 from app.features.facturas.router import router as facturas_router
+from app.features.settings.router import router as settings_router
 
 # Import Odoo connection
 from app.infrastructure.odoo import odoo_manager
@@ -152,6 +153,7 @@ app.include_router(adjustments_router, prefix="/api")
 app.include_router(sales_router, prefix="/api")
 app.include_router(inconsistencies_router, prefix="/api")
 app.include_router(facturas_router, prefix="/api")
+app.include_router(settings_router, prefix="/api")
 
 
 @app.get("/", tags=["Root"])

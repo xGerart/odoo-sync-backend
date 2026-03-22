@@ -55,7 +55,7 @@ def init_db() -> None:
     This should be called on application startup.
     In production, use Alembic migrations instead.
     """
-    from app.models import user, odoo_connection, audit_log, pending_transfer, pending_adjustment  # noqa
+    from app.models import user, odoo_connection, audit_log, pending_transfer, pending_adjustment, app_setting  # noqa
     Base.metadata.create_all(bind=engine)
 
 

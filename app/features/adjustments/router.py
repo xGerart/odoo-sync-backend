@@ -19,11 +19,22 @@ from app.schemas.adjustment import (
 from app.schemas.auth import UserInfo
 from app.features.auth.dependencies import require_admin, require_admin_or_bodeguero, get_current_user
 from app.features.adjustments.service import AdjustmentService
+from app.features.settings.router import get_setting, AUTO_CONFIRM_ADJUSTMENTS
 import logging
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/adjustments", tags=["Adjustments"])
+
+
+def _create_auto_confirm_user(real_user: UserInfo) -> UserInfo:
+    """Create a virtual admin user for auto-confirm, preserving the original username."""
+    return UserInfo(
+        user_id=real_user.user_id,
+        username=f"auto-confirm ({real_user.username})",
+        role=real_user.role,
+        auth_source=real_user.auth_source
+    )
 
 
 @router.post("/prepare", response_model=AdjustmentResponse)
@@ -39,16 +50,15 @@ def prepare_adjustment(
     **Requires:** Admin or Bodeguero role
 
     Validates items and saves to database.
-    **Does NOT update inventory** - that happens on confirmation.
+    If auto-confirm is enabled, the adjustment is also executed immediately.
 
     - **items**: List of adjustment items with product info, quantities, reasons, and descriptions
 
     Returns:
     - Adjustment validation results
-    - Inventory NOT updated flag
-    - Adjustment saved to database for admin confirmation
+    - Inventory updated flag (True if auto-confirmed)
 
-    Use `/adjustments/confirm` to actually execute the adjustment.
+    Use `/adjustments/confirm` to manually execute if auto-confirm is off.
     """
     logger.info(f"=== PREPARE ADJUSTMENT ===")
     logger.info(f"User: {current_user.username}")
@@ -59,6 +69,29 @@ def prepare_adjustment(
         service = AdjustmentService(principal_client, db=db)
 
         result = service.prepare_adjustment(request.items, current_user)
+
+        # If preparation succeeded and auto-confirm is enabled, execute immediately
+        if result.success:
+            auto_confirm = get_setting(db, AUTO_CONFIRM_ADJUSTMENTS, "false")
+            if auto_confirm.lower() == "true":
+                logger.info(f"Auto-confirm enabled - executing adjustment automatically")
+                # Find the pending adjustment that was just created
+                from app.models.pending_adjustment import PendingAdjustment, AdjustmentStatus
+                pending = db.query(PendingAdjustment).filter(
+                    PendingAdjustment.username == current_user.username,
+                    PendingAdjustment.status == AdjustmentStatus.PENDING
+                ).order_by(PendingAdjustment.created_at.desc()).first()
+
+                if pending:
+                    auto_user = _create_auto_confirm_user(current_user)
+                    confirm_result = service.confirm_adjustment(
+                        request.items, auto_user, pending.id
+                    )
+                    confirm_result.message = (
+                        f"Auto-confirmado: {confirm_result.message}"
+                    )
+                    return confirm_result
+
         return result
 
     except Exception as e:
