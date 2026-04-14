@@ -633,7 +633,7 @@ class FacturaService:
         from app.utils.formatters import (
             apply_profit_margin,
             calculate_price_without_iva,
-            round_to_half_dollar
+            round_to_quarter_dollar
         )
 
         # 0. Filter out excluded items (they should not be synced)
@@ -709,8 +709,8 @@ class FacturaService:
                 # Apply profit margin
                 price_with_margin = apply_profit_margin(real_unit_cost, profit_margin)
 
-                # Round to next $0.50
-                display_price = round_to_half_dollar(price_with_margin)
+                # Round UP to next $0.25
+                display_price = round_to_quarter_dollar(price_with_margin)
 
                 # Calculate price without IVA for Odoo
                 if apply_iva:
@@ -1086,9 +1086,9 @@ class FacturaService:
                 sale_price_for_history = item.manual_sale_price
             else:
                 # Calculate automatic price (same logic as transform method)
-                from app.utils.formatters import apply_profit_margin, round_to_half_dollar
+                from app.utils.formatters import apply_profit_margin, round_to_quarter_dollar
                 price_with_margin = apply_profit_margin(correct_unit_price, pending_invoice.profit_margin)
-                sale_price_for_history = round_to_half_dollar(price_with_margin)
+                sale_price_for_history = round_to_quarter_dollar(price_with_margin)
 
             history_item = InvoiceHistoryItem(
                 history_id=history.id,

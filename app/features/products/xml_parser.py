@@ -594,7 +594,7 @@ class XMLInvoiceParser:
             apply_profit_margin,
             calculate_price_with_iva,
             calculate_price_without_iva,
-            round_to_half_dollar
+            round_to_quarter_dollar
         )
 
         mapped_products = []
@@ -603,8 +603,8 @@ class XMLInvoiceParser:
             # Calculate price with margin
             price_with_margin = apply_profit_margin(product.precio_unitario, profit_margin)
 
-            # Round to nearest 50 cents - this is the FINAL sale price (includes IVA conceptually)
-            display_price = round_to_half_dollar(price_with_margin)
+            # Round UP to nearest 25 cents - this is the FINAL sale price (includes IVA conceptually)
+            display_price = round_to_quarter_dollar(price_with_margin)
 
             # Calculate price WITHOUT IVA to store in Odoo
             # When Odoo sells the product, it will add IVA and get back to display_price

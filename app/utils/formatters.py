@@ -53,31 +53,34 @@ def round_price_ecuador(price: float) -> float:
     return float(rounded)
 
 
-def round_to_half_dollar(price: float) -> float:
+def round_to_quarter_dollar(price: float) -> float:
     """
-    Round price UP to nearest 50 cents (0.50).
+    Round price UP to nearest 25 cents (0.25).
 
-    Always rounds up to the next .00 or .50 ending.
+    Always rounds up to the next .00, .25, .50 or .75 ending.
 
     Args:
         price: Original price
 
     Returns:
-        Rounded price to next .00 or .50
+        Rounded price to next .00, .25, .50 or .75
 
     Examples:
-        >>> round_to_half_dollar(12.06)
+        >>> round_to_quarter_dollar(12.06)
+        12.25
+        >>> round_to_quarter_dollar(12.25)
+        12.25
+        >>> round_to_quarter_dollar(12.26)
         12.50
-        >>> round_to_half_dollar(12.25)
-        12.50
-        >>> round_to_half_dollar(12.51)
-        13.00
-        >>> round_to_half_dollar(12.00)
+        >>> round_to_quarter_dollar(12.51)
+        12.75
+        >>> round_to_quarter_dollar(12.00)
         12.00
     """
     import math
-    # Round UP to nearest 0.50
-    return math.ceil(price / 0.5) * 0.5
+    # Round UP to nearest 0.25
+    # Multiply by 4 to work in integer cents quarters, then ceil, then divide
+    return math.ceil(round(price * 4, 6)) / 4
 
 
 def calculate_price_with_iva(price_without_iva: float, iva_rate: float = IVA_RATE) -> float:
@@ -135,14 +138,14 @@ def calculate_sale_price(
         cost_price: Original cost price
         profit_margin: Profit margin (0-1)
         include_iva: Whether to include IVA in final price
-        round_ecuador: Whether to round to nearest 50 cents (.00 or .50)
+        round_ecuador: Whether to round UP to nearest 25 cents (.00, .25, .50 or .75)
 
     Returns:
         Final sale price
 
     Example:
         >>> calculate_sale_price(10.00, 0.50, include_iva=True, round_ecuador=True)
-        17.50  # (10 * 1.5 * 1.15 = 17.25 rounded to 17.50)
+        17.25  # (10 * 1.5 * 1.15 = 17.25)
     """
     # Apply margin
     price = apply_profit_margin(cost_price, profit_margin)
@@ -151,9 +154,9 @@ def calculate_sale_price(
     if include_iva:
         price = calculate_price_with_iva(price)
 
-    # Round to nearest 50 cents if requested
+    # Round UP to nearest 25 cents if requested
     if round_ecuador:
-        price = round_to_half_dollar(price)
+        price = round_to_quarter_dollar(price)
 
     return price
 
