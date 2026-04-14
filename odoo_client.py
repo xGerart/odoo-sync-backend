@@ -359,7 +359,7 @@ class OdooClient:
             raise Exception("Not authenticated")
 
         try:
-            # Get current product details to check existing prices
+            # Get current product details (for logging purposes only)
             current_details = self.get_product_details(product_id)
             current_list_price = float(current_details.get('list_price', 0)) if current_details else 0
             new_list_price = self._format_decimal_for_odoo(product.list_price)
@@ -367,14 +367,11 @@ class OdooClient:
             update_data = {
                 'standard_price': self._format_decimal_for_odoo(product.standard_price),  # Cost price
                 'available_in_pos': product.available_in_pos,
+                # Always use the system-calculated price (no price protection)
+                'list_price': new_list_price,
             }
 
-            # Price protection: only update sale price if new price is higher
-            if new_list_price > current_list_price:
-                update_data['list_price'] = new_list_price
-                print(f"💰 Updating sale price: ${current_list_price} → ${new_list_price}")
-            else:
-                print(f"🛡️ Protecting higher sale price: keeping ${current_list_price} (XML suggests ${new_list_price})")
+            print(f"💰 Updating sale price: ${current_list_price} → ${new_list_price}")
 
             # Always update cost price
             print(f"💸 Updating cost price: ${self._format_decimal_for_odoo(product.standard_price)}")
@@ -499,16 +496,12 @@ class OdooClient:
             update_data = {
                 'standard_price': self._format_decimal_for_odoo(product.standard_price),
                 'available_in_pos': product.available_in_pos,
-                'barcode': product.barcode  # Keep the barcode
+                'barcode': product.barcode,  # Keep the barcode
+                # Always use the system-calculated price (no price protection)
+                'list_price': new_list_price,
             }
 
-            # Price protection: only update sale price if new price is higher
-            if new_list_price > current_list_price:
-                update_data['list_price'] = new_list_price
-                print(f"💰 Updating sale price: ${current_list_price} → ${new_list_price}")
-            else:
-                print(f"🛡️ Protecting higher sale price: keeping ${current_list_price} (XML suggests ${new_list_price})")
-
+            print(f"💰 Updating sale price: ${current_list_price} → ${new_list_price}")
             print(f"💸 Updating cost price: ${self._format_decimal_for_odoo(product.standard_price)}")
 
             # Add version-specific product type field
@@ -2262,16 +2255,12 @@ class OdooClient:
             if not original_details:
                 raise Exception(f"Could not get details for product ID: {product_id}")
 
-            # Check current prices for protection
+            # Current price captured for logging only (no price protection)
             current_list_price = float(original_details.get('list_price', 0))
             new_list_price = self._format_decimal_for_odoo(product.list_price)
 
-            # Determine which price to use (protection logic)
-            protected_list_price = max(current_list_price, new_list_price)
-            if protected_list_price > new_list_price:
-                print(f"🛡️ Protecting higher sale price in recreated product: ${protected_list_price} (XML suggests ${new_list_price})")
-            else:
-                print(f"💰 Using new sale price in recreated product: ${new_list_price}")
+            # Always use the system-calculated price (no price protection)
+            print(f"💰 Using new sale price in recreated product: ${current_list_price} → ${new_list_price}")
 
             # No need for temporary barcodes - we'll handle transfer manually
 
@@ -2292,7 +2281,7 @@ class OdooClient:
                 new_product_data = {
                     'name': product.name,
                     'standard_price': self._format_decimal_for_odoo(product.standard_price),
-                    'list_price': protected_list_price,  # Use protected price
+                    'list_price': new_list_price,  # Always use system-calculated price
                     'tracking': 'none',
                     'available_in_pos': True
                 }

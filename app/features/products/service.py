@@ -334,11 +334,9 @@ class ProductService:
             update_data = {
                 'standard_price': format_decimal_for_odoo(product.standard_price),
                 'available_in_pos': True,
+                # Always use the system-calculated price (no price protection)
+                'list_price': new_list_price,
             }
-
-            # Price protection: only update if new price is higher
-            if new_list_price > current_list_price:
-                update_data['list_price'] = new_list_price
 
             if product.barcode:
                 update_data['barcode'] = product.barcode
@@ -435,15 +433,13 @@ class ProductService:
                 update_data = {
                     'standard_price': new_standard_price,
                     'available_in_pos': True,
-                    'barcode': barcode
+                    'barcode': barcode,
+                    # Always use the system-calculated price (no price protection)
+                    'list_price': new_list_price,
                 }
 
-                # Track if price was updated
-                price_updated = False
-                # Price protection: only update if new price is higher
-                if new_list_price > current_list_price:
-                    update_data['list_price'] = new_list_price
-                    price_updated = True
+                # Price is always updated now (system-calculated price always wins)
+                price_updated = (new_list_price != current_list_price)
 
                 self.client.write(OdooModel.PRODUCT_PRODUCT, [product_id], update_data)
 
@@ -460,8 +456,8 @@ class ProductService:
                         product_mapped['name']
                     )
 
-                # Determine final values that are actually in Odoo
-                final_list_price = float(new_list_price) if price_updated else current_list_price
+                # Final values that are actually in Odoo (system-calculated price always wins)
+                final_list_price = float(new_list_price)
                 final_standard_price = float(new_standard_price)
 
                 return SyncResult(
