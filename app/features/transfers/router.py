@@ -750,6 +750,7 @@ def get_transfer_history_detail(
     import logging
     from app.models.transfer_history import TransferHistory
     from app.models.pending_transfer import PendingTransfer
+    from app.schemas.transfer import TransferHistoryItemResponse
 
     logger = logging.getLogger(__name__)
 
@@ -780,7 +781,30 @@ def get_transfer_history_detail(
 
         logger.info(f"Retrieved transfer history detail for ID {history_id}")
 
-        return TransferHistoryResponse.model_validate(history)
+        # TransferHistory records are always completed executions. The ORM model
+        # has no `status` column, so build the response dict explicitly (same
+        # pattern as the list endpoints) to satisfy the response schema.
+        history_dict = {
+            "id": history.id,
+            "status": "COMPLETED",
+            "pending_transfer_id": history.pending_transfer_id,
+            "origin_location": history.origin_location,
+            "destination_location_id": history.destination_location_id,
+            "destination_location_name": history.destination_location_name,
+            "executed_by": history.executed_by,
+            "executed_at": history.executed_at,
+            "total_items": history.total_items,
+            "successful_items": history.successful_items,
+            "failed_items": history.failed_items,
+            "total_quantity_requested": history.total_quantity_requested,
+            "total_quantity_transferred": history.total_quantity_transferred,
+            "has_errors": history.has_errors,
+            "error_summary": history.error_summary,
+            "pdf_filename": history.pdf_filename,
+            "items": [TransferHistoryItemResponse.model_validate(item) for item in history.items]
+        }
+
+        return TransferHistoryResponse(**history_dict)
 
     except HTTPException:
         raise
